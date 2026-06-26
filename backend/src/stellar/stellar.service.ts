@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   rpc,
+  Account,
   Keypair,
   Networks,
   TransactionBuilder,
@@ -19,6 +20,8 @@ export interface ContractIds {
   honk12w: string;
   honk24w: string;
   verifier: string;
+  vault: string;
+  credit: string;
 }
 
 @Injectable()
@@ -60,9 +63,12 @@ export class StellarService {
     sourceAccountId?: string,
   ): Promise<unknown> {
     const contract = new Contract(contractId);
-    const source = sourceAccountId
+    // For simulations we use a synthetic Account — Soroban does not broadcast
+    // or check sequence during simulateTransaction, so the placeholder does
+    // not need to exist on-chain. Avoids "account not found" errors.
+    const source: Account = sourceAccountId
       ? await this.server.getAccount(sourceAccountId)
-      : await this.server.getAccount(this.placeholderAccount());
+      : new Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '0');
 
     const tx = new TransactionBuilder(source, {
       fee: BASE_FEE,

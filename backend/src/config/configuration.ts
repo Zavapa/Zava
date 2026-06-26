@@ -21,6 +21,9 @@ export default () => ({
       honk12w: process.env.ZAVA_HONK_12W ?? '',
       honk24w: process.env.ZAVA_HONK_24W ?? '',
       verifier: process.env.ZAVA_VERIFIER ?? '',
+      // New bulletproof credit + vault contracts
+      vault: process.env.ZAVA_VAULT ?? 'CDHR57633FAZN4BU7HLRVHD62Y4MYC6KVNKK4SF4YY7YA3LEO6TQYEVB',
+      credit: process.env.ZAVA_CREDIT ?? 'CBV4VN6AX5UTCSMB4AELEE7MN5ZWFRFLAXLVGYOW4UUCNVDSOAWQLPK7',
     },
   },
   circuits: {

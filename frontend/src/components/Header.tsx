@@ -8,7 +8,9 @@ import { Button } from './ui/Button';
 
 const NAV = [
   { href: '/dashboard', label: 'Overview' },
+  { href: '/dashboard/savings', label: 'Savings' },
   { href: '/dashboard/deposit', label: 'Deposit' },
+  { href: '/dashboard/withdraw', label: 'Withdraw' },
   { href: '/dashboard/credit', label: 'Credit' },
 ];
 

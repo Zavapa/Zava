@@ -10,10 +10,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { address, displayName } = useWallet();
 
   useEffect(() => {
-    // Give the wallet provider a moment to hydrate from Freighter before redirecting.
+    // Wait 1.5s for Freighter to hydrate before deciding to bounce.
     const t = setTimeout(() => {
       if (!address || !displayName) router.replace('/');
-    }, 300);
+    }, 1500);
     return () => clearTimeout(t);
   }, [address, displayName, router]);
 

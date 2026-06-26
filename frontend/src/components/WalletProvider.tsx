@@ -19,7 +19,9 @@ interface WalletState {
   network: string | null;
   networkPassphrase: string | null;
   displayName: string | null;
-  secret: string | null; // 32-byte hex, used to derive commitments/nullifiers locally
+  secret: string | null;  // 32-byte hex — NEVER shared, never in any URL
+  zavaId: string | null;  // sha256("zava_id_v1"   || secret) — public payment identity
+  scanKey: string | null; // sha256("zava_scan_v1" || secret) — included in payment links so payer can encrypt notes; lets holder READ but NOT SPEND
   connecting: boolean;
   error: string | null;
   connect: () => Promise<void>;
@@ -35,7 +37,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [network, setNetwork] = useState<string | null>(null);
   const [networkPassphrase, setNetworkPassphrase] = useState<string | null>(null);
   const [displayName, setDisplayNameState] = useState<string | null>(null);
-  const [secret, setSecret] = useState<string | null>(null);
+  const [secret, setSecret]   = useState<string | null>(null);
+  const [zavaId, setZavaId]   = useState<string | null>(null);
+  const [scanKey, setScanKey] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,13 +61,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const loadLocalSecret = (addr: string) => {
     const raw = localStorage.getItem(`${SECRET_STORAGE_KEY}.${addr}`);
-    if (raw) {
-      setSecret(raw);
-    } else {
-      const fresh = generateHexSecret();
-      localStorage.setItem(`${SECRET_STORAGE_KEY}.${addr}`, fresh);
-      setSecret(fresh);
-    }
+    const s = raw ?? generateHexSecret();
+    if (!raw) localStorage.setItem(`${SECRET_STORAGE_KEY}.${addr}`, s);
+    setSecret(s);
+    const enc = new TextEncoder();
+    const sBytes = hexToBytes(s);
+    // zavaId  = sha256("zava_id_v1"   || secret) — public identity, safe to share
+    void crypto.subtle.digest('SHA-256', concat(enc.encode('zava_id_v1'), sBytes))
+      .then((h) => setZavaId(toHex(h)));
+    // scanKey = sha256("zava_scan_v1" || secret) — viewing key only, goes in payment link
+    // Knowing scanKey lets you see incoming payments but CANNOT withdraw (need secret for that)
+    void crypto.subtle.digest('SHA-256', concat(enc.encode('zava_scan_v1'), sBytes))
+      .then((h) => setScanKey(toHex(h)));
   };
 
   const loadDisplayName = (addr: string) => {
@@ -107,6 +116,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setNetworkPassphrase(null);
     setDisplayNameState(null);
     setSecret(null);
+    setZavaId(null);
+    setScanKey(null);
   }, []);
 
   const value = useMemo<WalletState>(
@@ -117,6 +128,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       networkPassphrase,
       displayName,
       secret,
+      zavaId,
+      scanKey,
       connecting,
       error,
       connect,
@@ -130,6 +143,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       networkPassphrase,
       displayName,
       secret,
+      zavaId,
+      scanKey,
       connecting,
       error,
       connect,
@@ -151,4 +166,22 @@ function generateHexSecret(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a); out.set(b, a.length);
+  return out;
+}
+
+function toHex(buf: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }

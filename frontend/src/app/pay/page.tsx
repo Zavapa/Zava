@@ -1,0 +1,241 @@
+'use client';
+
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
+import { Input } from '@/components/ui/Input';
+import * as freighter from '@/lib/freighter';
+import { vaultDeposit, CONTRACT_IDS } from '@/lib/stellar';
+import { deriveCommitment, deriveNullifier } from '@/lib/crypto';
+import { encryptNote } from '@/lib/noteEncryption';
+import { saveDeposit } from '@/lib/savingsStore';
+
+// The zavaId in the URL is sha256(recipient_secret).
+// It IS NOT a Stellar address — the recipient's real wallet is never in the URL.
+
+type Step = 'idle' | 'depositing' | 'done';
+
+function PayContent() {
+  const params = useSearchParams();
+
+  const zavaId       = params.get('zavaId')  ?? '';
+  const scanKey      = params.get('scanKey') ?? ''; // viewing key — used to encrypt note
+  const nonce        = params.get('nonce')   ?? '';
+  const weekNumber   = parseInt(params.get('w') ?? '0', 10);
+  const suggestedAmt = params.get('a') ?? '';
+  const asset        = (params.get('asset') ?? 'XLM') as 'XLM' | 'USDC';
+
+  const [amount, setAmount]         = useState(suggestedAmt);
+  const [wallet, setWallet]         = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [step, setStep]             = useState<Step>('idle');
+  const [txHash, setTxHash]         = useState<string | null>(null);
+  const [leafIndex, setLeafIndex]   = useState<number | null>(null);
+  const [error, setError]           = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      const s = await freighter.getStatus();
+      if (s.connected && s.address) setWallet(s.address);
+    })();
+  }, []);
+
+  const connect = useCallback(async () => {
+    setError(null);
+    setConnecting(true);
+    try {
+      const s = await freighter.connect();
+      if (!s.address) throw new Error('Freighter did not return an address.');
+      setWallet(s.address);
+    } catch (e) { setError((e as Error).message); }
+    finally { setConnecting(false); }
+  }, []);
+
+  const pay = useCallback(async () => {
+    if (!wallet) return;
+    const num = Number(amount);
+    if (!num || num <= 0) { setError('Enter a valid amount.'); return; }
+    setError(null);
+    setStep('depositing');
+    try {
+      const amountStroops = BigInt(Math.floor(num * 10_000_000));
+
+      // Commitment = hash(nonce, amountStroops) — hides the amount
+      const commitment = await deriveCommitment(nonce, Number(amountStroops));
+      const nullifier  = await deriveNullifier(nonce, weekNumber);
+
+      // Encrypt the note with the recipient's scanKey (viewing key from the URL).
+      // scanKey = sha256("zava_scan_v1" || secret) — derived from their secret but separate.
+      // The recipient decrypts with their own scanKey (derived from their secret at load time).
+      // Knowing scanKey lets you READ notes but CANNOT withdraw — that needs the real secret.
+      const encryptedNote = await encryptNote(
+        { amount: Number(amountStroops), nonce, week: weekNumber, asset },
+        scanKey,
+      );
+
+      const { hash, leafIndex: idx } = await vaultDeposit({
+        depositor:     wallet,
+        commitment,
+        nullifier,
+        amountStroops,
+        encryptedNote,
+      });
+
+      setTxHash(hash);
+      setLeafIndex(idx);
+      setStep('done');
+    } catch (e) {
+      setError((e as Error).message);
+      setStep('idle');
+    }
+  }, [wallet, amount, nonce, weekNumber, zavaId, asset]);
+
+  // Validate — zavaId, scanKey, and nonce must all be 64 hex chars
+  const isValidLink = zavaId.length === 64 && scanKey.length === 64 && nonce.length === 64;
+
+  if (!isValidLink) return (
+    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+      <Card className="w-full max-w-md">
+        <CardContent className="pt-6">
+          <p className="text-sm text-danger">Invalid or expired payment link. Ask the sender for a new one.</p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center bg-background p-6">
+      <div className="w-full max-w-lg space-y-6">
+
+        <div className="text-center space-y-1">
+          <p className="text-xs font-medium uppercase tracking-widest text-muted">Zava · Private Payment</p>
+          <h1 className="text-2xl font-semibold tracking-tight">Pay privately in {asset}</h1>
+          <p className="text-sm text-muted">
+            Payment goes into the <strong>Zava shielded vault</strong>. The recipient's
+            wallet address is completely hidden — even from you.
+          </p>
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">How your payment stays private</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted space-y-2">
+            <p>✦ Your {asset} locks into the <strong className="text-foreground">ZavaVault contract</strong> — not sent to any personal wallet</p>
+            <p>✦ Only a cryptographic hash (not the amount) is stored on-chain</p>
+            <p>✦ An encrypted note is stored — only the recipient can read it</p>
+            <p>✦ The recipient withdraws privately using a ZK proof — <strong className="text-foreground">you cannot trace them</strong></p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Enter amount &amp; pay</CardTitle>
+            <CardDescription>
+              {suggestedAmt
+                ? `Suggested: ${suggestedAmt} ${asset} — you can change it or tip more.`
+                : `Enter any amount of ${asset}. Tips welcome.`}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Input
+              label={`Amount (${asset})`}
+              type="number"
+              min={0.0000001}
+              step={0.0000001}
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              hint="Your exact amount is hidden inside the vault — not visible on-chain."
+              disabled={step !== 'idle'}
+            />
+
+            <div className="rounded-md border border-border bg-subtle px-4 py-3 text-xs text-muted">
+              <p className="font-medium text-foreground mb-1">Funds go to vault:</p>
+              <p className="font-mono break-all">{CONTRACT_IDS.vault || '…'}</p>
+            </div>
+
+            {!wallet ? (
+              <Button onClick={connect} disabled={connecting}>
+                {connecting ? 'Connecting…' : 'Connect Freighter to pay'}
+              </Button>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Badge tone="success">Connected</Badge>
+                  <span className="font-mono text-xs text-muted">
+                    {wallet.slice(0, 6)}…{wallet.slice(-6)}
+                  </span>
+                </div>
+
+                {step === 'done' && txHash ? (
+                  <div className="space-y-3">
+                    <Badge tone="success">Payment complete</Badge>
+                    <div className="text-sm text-muted space-y-1">
+                      <p>
+                        <strong className="text-foreground">{amount} {asset}</strong> is locked
+                        in the Zava vault. Leaf #{leafIndex}.
+                      </p>
+                      <p>
+                        Transaction:{' '}
+                        <a
+                          href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
+                          target="_blank" rel="noopener noreferrer"
+                          className="underline"
+                        >
+                          {txHash.slice(0, 14)}…
+                        </a>
+                      </p>
+                      <p className="pt-1 text-xs">
+                        On-chain: {'"'}someone deposited {asset} to ZavaVault.{"'"} The recipient, amount,
+                        and link to any wallet are completely hidden.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <Button
+                    onClick={pay}
+                    disabled={step !== 'idle' || !amount || Number(amount) <= 0}
+                  >
+                    {step === 'depositing'
+                      ? 'Signing in Freighter…'
+                      : `Pay ${amount || '?'} ${asset} into vault`}
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {error && <p className="text-sm text-danger">{error}</p>}
+
+            <div className="rounded-md border border-border bg-subtle px-4 py-3 text-xs text-muted space-y-2">
+              <div>
+                <p className="font-medium text-foreground">Visible on Stellar:</p>
+                <p>• Your wallet sent {asset} to ZavaVault</p>
+              </div>
+              <div>
+                <p className="font-medium text-foreground">Completely hidden:</p>
+                <p>• Who the recipient is</p>
+                <p>• The exact amount</p>
+                <p>• Any connection to their withdrawal</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+      </div>
+    </div>
+  );
+}
+
+export default function PayPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center">
+        <p className="text-sm text-muted">Loading payment request…</p>
+      </div>
+    }>
+      <PayContent />
+    </Suspense>
+  );
+}

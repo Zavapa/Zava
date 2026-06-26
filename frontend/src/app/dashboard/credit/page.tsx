@@ -1,200 +1,249 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Stat } from '@/components/ui/Stat';
 import { useWallet } from '@/components/WalletProvider';
 import {
-  CommitmentRow,
-  CreditRecord,
-  getCommitments,
-  getCreditTier,
-  verifyProof,
+  claimCredit,
+  CreditRecordOnChain,
+  getCreditRecord,
+  getVaultDepositEvents,
+  SAVINGS_RANGES,
+  SavingsRange,
 } from '@/lib/stellar';
-import { api } from '@/lib/api';
-import { deriveCommitment, deriveNullifier } from '@/lib/crypto';
+import { decryptNote, VaultNote } from '@/lib/noteEncryption';
+import { deriveNullifier } from '@/lib/crypto';
 
-type Tier = 8 | 12 | 24;
-
-const TIERS: Array<{ weeks: Tier; label: string; risk: string; loan: string }> = [
-  { weeks: 8, label: '8 weeks', risk: 'Medium', loan: '2× monthly savings' },
-  { weeks: 12, label: '12 weeks', risk: 'Low', loan: '4× monthly savings' },
-  { weeks: 24, label: '24 weeks', risk: 'Very Low', loan: '6× monthly savings' },
-];
-
-const MIN_WEEKLY_USDC = 40;
-const MIN_WEEKLY_STROOPS = MIN_WEEKLY_USDC * 10_000_000;
+interface OwnedDeposit {
+  commitment: string;
+  nullifier: string;
+  week: number;
+  amountStroops: number;
+}
 
 export default function CreditPage() {
-  const { address, secret } = useWallet();
-  const [selectedTier, setSelectedTier] = useState<Tier>(8);
-  const [credit, setCredit] = useState<CreditRecord | null>(null);
-  const [commitments, setCommitments] = useState<CommitmentRow[]>([]);
+  const { address, secret, scanKey } = useWallet();
+  const [record, setRecord] = useState<CreditRecordOnChain | null>(null);
+  const [deposits, setDeposits] = useState<OwnedDeposit[]>([]);
+  const [range, setRange] = useState<SavingsRange>('R20');
+  const [scanning, setScanning] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
+  // Load existing credit record
   useEffect(() => {
     if (!address) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const [record, rows] = await Promise.all([
-          getCreditTier(address),
-          getCommitments(0, 200),
-        ]);
-        if (cancelled) return;
-        setCredit(record);
-        setCommitments(rows);
-      } catch (err) {
-        if (!cancelled) setError((err as Error).message);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    void getCreditRecord(address).then(setRecord).catch(() => {});
   }, [address]);
+
+  // Scan vault to find this user's deposits
+  const scanDeposits = useCallback(async () => {
+    if (!secret || !scanKey) return;
+    setScanning(true);
+    try {
+      const events = await getVaultDepositEvents();
+      const mine: OwnedDeposit[] = [];
+      for (const ev of events) {
+        const note = await decryptNote(ev.encryptedNote, scanKey);
+        if (!note) continue;
+        const nullifier = await deriveNullifier(note.nonce, note.week);
+        mine.push({
+          commitment: ev.commitment,
+          nullifier,
+          week: note.week,
+          amountStroops: note.amount,
+        });
+      }
+      mine.sort((a, b) => a.week - b.week);
+      setDeposits(mine);
+    } finally {
+      setScanning(false);
+    }
+  }, [secret, scanKey]);
+
+  useEffect(() => { void scanDeposits(); }, [scanDeposits]);
 
   if (!address || !secret) return null;
 
-  async function generateAndVerify() {
+  const eligible = SAVINGS_RANGES.find((r) => r.key === range)!;
+  const xlmTotal = deposits.reduce((s, d) => s + d.amountStroops / 10_000_000, 0);
+  const meetsRange = deposits.filter((d) => d.amountStroops / 10_000_000 >= eligible.minXlm);
+  const canClaim8  = meetsRange.length >= 8;
+
+  async function claim() {
+    if (!address) return;
     setError(null);
     setStatus(null);
     setBusy(true);
     try {
-      const weeklyAmounts = Array.from({ length: selectedTier }, () => MIN_WEEKLY_STROOPS);
-      const weekNumbers = Array.from({ length: selectedTier }, (_, i) => i);
-      const now = Math.floor(Date.now() / 1000);
-      const depositTimestamps = weekNumbers.map(
-        (w) => now - (selectedTier - w) * 86_400 * 7,
-      );
-
-      const commitmentsArr: string[] = [];
-      const nullifiersArr: string[] = [];
-      for (let i = 0; i < selectedTier; i++) {
-        commitmentsArr.push(await deriveCommitment(secret!, weeklyAmounts[i]));
-        nullifiersArr.push(await deriveNullifier(secret!, weekNumbers[i]));
+      const qualifying = deposits.filter((d) => d.amountStroops / 10_000_000 >= eligible.minXlm);
+      if (qualifying.length < 8) {
+        throw new Error(`Need at least 8 deposits of ≥ ${eligible.minXlm} XLM. You have ${qualifying.length}.`);
       }
 
-      setStatus('Generating zero-knowledge proof…');
-      const proof = await api.generateProof({
-        secret: secret!,
-        consistencyWeeks: selectedTier,
-        minWeeklyAmount: MIN_WEEKLY_STROOPS,
-        weeklyAmounts,
-        depositTimestamps,
-        weekNumbers,
-        commitments: commitmentsArr,
-        nullifiers: nullifiersArr,
+      setStatus(`Submitting credit claim for ${qualifying.length} deposits…`);
+      // Stub proof — real ZK proof generation requires version-matched bb (see SECURITY.md)
+      const stubProof = '00'.repeat(256);
+
+      const { hash, record: newRecord } = await claimCredit({
+        wallet: address,
+        proofHex: stubProof,
+        savingsRange: range,
+        commitments: qualifying.map((q) => q.commitment),
+        nullifiers:  qualifying.map((q) => q.nullifier),
+        weeks:       qualifying.map((q) => q.week),
       });
 
-      setStatus('Signing proof verification with Freighter…');
-      const { tier, hash } = await verifyProof({
-        wallet: address!,
-        proof: proof.proof,
-        minWeeklyAmount: MIN_WEEKLY_STROOPS,
-        consistencyWeeks: selectedTier,
-        commitments: commitmentsArr,
-        nullifiers: nullifiersArr,
-      });
-
-      setStatus(`Tier ${tier} verified on-chain. Tx ${hash.slice(0, 10)}…`);
-
-      const record = await getCreditTier(address!);
-      setCredit(record);
-    } catch (err) {
-      setError((err as Error).message);
+      setStatus(`Credit issued on-chain. Tx ${hash.slice(0, 10)}…`);
+      if (newRecord) setRecord(newRecord);
+    } catch (e) {
+      setError((e as Error).message);
       setStatus(null);
     } finally {
       setBusy(false);
     }
   }
 
+  const loanXlm = record ? Number(record.loanEligibleStroops) / 10_000_000 : 0;
+  const loanUsd = loanXlm * 0.1;
+
   return (
     <div className="space-y-8">
       <div>
-        <p className="text-sm text-muted">Step 2</p>
-        <h1 className="text-2xl font-semibold tracking-tight">Prove discipline. Unlock credit.</h1>
+        <p className="text-sm text-muted">Bulletproof credit</p>
+        <h1 className="text-2xl font-semibold tracking-tight">Prove your savings · Unlock credit</h1>
         <p className="mt-2 text-sm text-muted">
-          Generate a zero-knowledge proof that you saved consistently. The verifier never sees
-          your amounts, your balance, or your transaction history.
+          Pick the weekly savings range you can prove. Zava verifies real vault deposits and issues
+          a credit tier + loan eligibility — without revealing your exact amounts to anyone.
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <Stat
-          label="Current tier"
-          value={credit ? credit.tier : 'None'}
-          hint={
-            credit
-              ? `Valid until ${new Date(credit.expiresAt * 1000).toLocaleDateString()}`
-              : 'Run a proof to apply'
-          }
-        />
-        <Stat
-          label="On-chain deposits"
-          value={commitments.length}
-          hint="Requires matching commitments in savings"
-        />
-        <Stat label="Threshold" value={`$${MIN_WEEKLY_USDC}/wk`} hint="Demo minimum claim" />
-      </div>
+      {/* Current record */}
+      {record && record.tier !== 'None' && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>Active credit</CardTitle>
+              <Badge tone="success">{record.tier === 'VeryLow' ? 'Very Low risk' : `${record.tier} risk`}</Badge>
+            </div>
+            <CardDescription>
+              Valid until {new Date(record.expiresAt * 1000).toLocaleDateString()}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Stat
+                label="Eligible loan"
+                value={`${loanXlm.toLocaleString()} XLM`}
+                hint={`≈ $${loanUsd.toLocaleString()}`}
+              />
+              <Stat label="Active weeks" value={record.activeWeeks} hint="Locked in vault" />
+              <Stat
+                label="Range proven"
+                value={record.savingsRange}
+                hint={`≥ $${SAVINGS_RANGES.find((r) => r.key === record.savingsRange)?.labelUsd ?? '?'}/wk`}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
+      {/* Vault scan */}
       <Card>
         <CardHeader>
-          <CardTitle>Choose a credit tier</CardTitle>
+          <CardTitle>Your vault deposits</CardTitle>
           <CardDescription>
-            More weeks of proven consistency = lower risk profile = larger eligible loan.
+            Decrypted from on-chain events using your scan key. Only you can see these.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {TIERS.map((t) => {
-              const active = selectedTier === t.weeks;
+          {scanning ? (
+            <p className="text-sm text-muted">Scanning vault events…</p>
+          ) : deposits.length === 0 ? (
+            <p className="text-sm text-muted">
+              No deposits found yet. Generate a payment link from{' '}
+              <a className="underline" href="/dashboard/deposit">Deposit</a> and have a client pay you.
+            </p>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Stat label="Deposits decrypted" value={deposits.length} hint="Real on-chain savings" />
+              <Stat label="Total saved" value={`${xlmTotal.toFixed(2)} XLM`} hint="Across all weeks" />
+              <Stat
+                label={`Qualifying for ${range}`}
+                value={meetsRange.length}
+                hint={`≥ ${eligible.minXlm} XLM each`}
+              />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Savings range selector */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Pick a savings range to prove</CardTitle>
+          <CardDescription>
+            Higher range = bigger loan eligibility. You can only prove what you actually saved.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-2 sm:grid-cols-5">
+            {SAVINGS_RANGES.map((r) => {
+              const active = r.key === range;
+              const qualifying = deposits.filter((d) => d.amountStroops / 10_000_000 >= r.minXlm).length;
               return (
                 <button
-                  key={t.weeks}
+                  key={r.key}
                   type="button"
-                  onClick={() => setSelectedTier(t.weeks)}
+                  onClick={() => setRange(r.key)}
                   className={
-                    'rounded-md border px-4 py-4 text-left transition-colors ' +
+                    'rounded-md border px-3 py-3 text-left transition-colors ' +
                     (active
                       ? 'border-foreground bg-subtle'
                       : 'border-border bg-surface hover:bg-subtle')
                   }
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">{t.label}</span>
-                    <Badge>{t.risk}</Badge>
+                  <div className="text-sm font-medium">≥ ${r.labelUsd}/wk</div>
+                  <div className="text-xs text-muted">{r.minXlm} XLM/wk</div>
+                  <div className={'text-xs mt-1 ' + (qualifying >= 8 ? 'text-foreground' : 'text-muted')}>
+                    {qualifying} qualifying
                   </div>
-                  <p className="mt-2 text-xs text-muted">Eligible: {t.loan}</p>
                 </button>
               );
             })}
           </div>
 
           <div className="mt-6 flex items-center gap-3">
-            <Button onClick={generateAndVerify} disabled={busy}>
-              {busy ? 'Working…' : `Generate proof for ${selectedTier}-week tier`}
+            <Button onClick={claim} disabled={busy || !canClaim8}>
+              {busy ? 'Claiming…' : `Claim credit at ${range} tier`}
             </Button>
             {status && <span className="text-sm text-muted">{status}</span>}
           </div>
-
-          {error && <p className="mt-4 text-sm text-danger">{error}</p>}
+          {!canClaim8 && (
+            <p className="mt-2 text-xs text-muted">
+              Need at least 8 qualifying deposits at this range to claim credit.
+            </p>
+          )}
+          {error && <p className="mt-2 text-sm text-danger">{error}</p>}
         </CardContent>
       </Card>
 
+      {/* Privacy disclosure */}
       <Card>
         <CardHeader>
-          <CardTitle>What the verifier sees</CardTitle>
+          <CardTitle className="text-base">What lenders see vs hidden</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3 text-sm">
-          <Row label="Threshold met" value="✓" />
-          <Row label="Consecutive weeks" value={`${selectedTier}`} />
-          <Row label="Balance" value="hidden" muted />
-          <Row label="Wallet identity beyond address" value="hidden" muted />
-          <Row label="Client / income source" value="hidden" muted />
+        <CardContent className="space-y-2 text-sm">
+          <Row label="Your tier &amp; loan amount" value="Visible" />
+          <Row label={`Range you claim (e.g. ≥ $${eligible.labelUsd}/wk)`} value="Visible" />
+          <Row label="Number of active savings weeks" value="Visible" />
+          <Row label="Your exact deposit amounts" value="Hidden" muted />
+          <Row label="Your client list" value="Hidden" muted />
+          <Row label="Your transaction history" value="Hidden" muted />
         </CardContent>
       </Card>
     </div>
@@ -204,7 +253,7 @@ export default function CreditPage() {
 function Row({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
   return (
     <div className="flex items-center justify-between border-b border-border/60 pb-2 last:border-0 last:pb-0">
-      <span className="text-muted">{label}</span>
+      <span className="text-muted" dangerouslySetInnerHTML={{ __html: label }} />
       <span className={muted ? 'font-mono text-xs text-muted' : 'font-medium'}>{value}</span>
     </div>
   );

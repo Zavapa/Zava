@@ -137,6 +137,10 @@ export default function LandingPage() {
 
         <p className="text-center text-xs text-muted">
           Built for Stellar Hacks · Real-World ZK
+          {' · '}
+          <a href="/lender" className="underline hover:text-foreground">
+            Lender portal
+          </a>
         </p>
       </div>
     </main>

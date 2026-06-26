@@ -58,6 +58,44 @@ export interface CreditRecord {
   expiresAt: number;
 }
 
+export type CreditTierV3 = 'None' | 'Medium' | 'Low' | 'VeryLow';
+export type SavingsRange = 'R5' | 'R20' | 'R50' | 'R200' | 'R500';
+
+export interface CreditRecordV3 {
+  wallet: string;
+  tier: CreditTierV3;
+  savingsRange: SavingsRange;
+  loanEligibleStroops: string; // bigint serialised
+  loanEligibleXlm: number;
+  loanEligibleUsd: number;
+  activeWeeks: number;
+  withdrawnWeeks: number;
+  verifiedAt: number;
+  expiresAt: number;
+  rangeMinWeeklyXlm: number;
+  rangeLabelUsd: number;
+  riskScore: number;
+}
+
+export interface LoanDecision {
+  borrower: string;
+  record: { tier: CreditTierV3; riskScore: number };
+  approved: boolean;
+  requestedXlm: number;
+  approvedXlm: number;
+  approvedUsd: number;
+  interestRate: number;
+  termWeeks: number;
+  totalRepayable: number;
+  decision: string;
+  borrowerVisible: {
+    tier: CreditTierV3;
+    riskScore: number;
+    savingsRangeLabel: string;
+    activeWeeks: number;
+  };
+}
+
 export const api = {
   health: () => request<{ ok: boolean }>('/health'),
 
@@ -112,4 +150,14 @@ export const api = {
 
   getCreditTier: (wallet: string) =>
     request<{ record: CreditRecord | null }>(`/credit/tier/${wallet}`),
+
+  // ── v3 — bulletproof credit (lender-facing) ───────────────────────────────
+  getCreditV3: (wallet: string) =>
+    request<CreditRecordV3>(`/credit/v3/${wallet}`),
+
+  getLoanEligibility: (wallet: string) =>
+    request<{ stroops: string; xlm: number; usd: number }>(`/credit/v3/${wallet}/eligibility`),
+
+  simulateLoan: (wallet: string, amountXlm: number) =>
+    request<LoanDecision>(`/credit/v3/${wallet}/simulate-loan?amount=${amountXlm}`),
 };
