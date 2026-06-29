@@ -85,7 +85,8 @@ export default function SendPage() {
       const inNullifier = await deriveNullifier(d.note.nonce, d.note.week);
 
       setStep('Fetching vault Merkle root…');
-      const { root } = await getVaultStats();
+      const asset = d.event.asset; // transfer stays in the same per-asset vault
+      const { root } = await getVaultStats(asset);
 
       // Stub proof — same security caveats as full withdrawal.
       const stubProof = '00'.repeat(256);
@@ -93,6 +94,7 @@ export default function SendPage() {
       setStep('Signing transfer in Freighter…');
       const { hash } = await vaultTransferShielded({
         caller:        address,
+        asset,
         proofHex:      stubProof,
         inNullifier,
         outCommitment: newCommitment,

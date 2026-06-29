@@ -8,8 +8,10 @@ import { Input } from '@/components/ui/Input';
 import { Stat } from '@/components/ui/Stat';
 import { useWallet } from '@/components/WalletProvider';
 import {
+  Asset,
   CONTRACT_IDS,
   getVaultStats,
+  getAllVaultStats,
   getVaultDepositEvents,
   vaultBindChangeNullifier,
   vaultCommitmentExists,
@@ -24,13 +26,14 @@ import { deriveChangeNonce, deriveCommitment, deriveNullifier } from '@/lib/cryp
 interface MyDeposit {
   /** "original" = paid in via the link; "change" = leftover from a partial withdrawal. */
   kind: 'original' | 'change';
+  /** Which vault holds this deposit. */
+  asset: Asset;
   /** Vault leaf index if known (originals always have it; change UTXOs may not until we index events). */
   leafIndex: number | null;
   /** Nonce used for commitment/nullifier derivation. */
   nonce: string;
   amount: number;
   week: number;
-  asset: string;
   commitment: string;
   nullifier: string;
   /** Private memo from the payer (Zcash-style). Undefined when none was attached. */
@@ -43,6 +46,8 @@ interface SavedChange {
   nonce: string;
   amountStroops: string; // bigint as string
   createdAt: number;
+  /** Which vault the change belongs to. Optional for backward-compat with old entries. */
+  asset?: Asset;
 }
 
 const CHANGE_PREFIX = 'zava.change.v1.';
@@ -92,15 +97,18 @@ export default function WithdrawPage() {
     setScanning(true);
     setError(null);
     try {
-      const [events, stats] = await Promise.all([
+      const [events, allStats] = await Promise.all([
         getVaultDepositEvents(),
-        getVaultStats(),
+        getAllVaultStats(),
       ]);
       setEventCount(events.length);
-      setVaultLocked(stats.totalLocked);
-      setLeafCount(stats.leafCount);
+      const totalLocked = allStats.reduce((sum, s) => sum + s.totalLocked, 0n);
+      const totalLeaves = allStats.reduce((sum, s) => sum + s.leafCount, 0);
+      setVaultLocked(totalLocked);
+      setLeafCount(totalLeaves);
 
-      // 1) Original deposits — decrypt indexer notes with scanKey.
+      // 1) Original deposits — decrypt indexer notes with scanKey, asset
+      //    carried over from the source vault.
       const originals: MyDeposit[] = [];
       for (const ev of events) {
         const note = await decryptNote(ev.encryptedNote, scanKey);
@@ -109,11 +117,11 @@ export default function WithdrawPage() {
         const nullifier  = await deriveNullifier(note.nonce, note.week);
         originals.push({
           kind: 'original',
+          asset: ev.asset,
           leafIndex: ev.leafIndex,
           nonce: note.nonce,
           amount: note.amount,
           week: note.week,
-          asset: note.asset,
           memo: note.memo,
           commitment,
           nullifier,
@@ -121,26 +129,18 @@ export default function WithdrawPage() {
         });
       }
 
-      // 2) Change UTXOs — re-derived deterministically from each original
-      //    deposit's commitment + nullifier + the user's secret. localStorage
-      //    is a hint about the *amount*, but the nonce itself is fully
-      //    recoverable from `deriveChangeNonce(secret, in_commitment, in_nullifier)`.
-      //    This means a cold device with just Freighter can still recover any
-      //    change UTXO the user created.
+      // 2) Change UTXOs — re-derived from each spent original. Asset inherits
+      //    from the input deposit.
       const candidates: MyDeposit[] = [...originals];
       const saved = readSavedChanges();
       const savedByCommitment = new Map<string, SavedChange>(
         saved.map((s) => [s.commitment, s.data]),
       );
 
-      // For each spent original, look up the deterministically-derived change
-      // commitment and surface it as a deposit if it has a known amount.
       for (const o of originals) {
-        const isSpent = await vaultIsNullifierSpent(o.nullifier);
+        const isSpent = await vaultIsNullifierSpent(o.nullifier, o.asset);
         if (!isSpent) continue;
         const changeNonce = await deriveChangeNonce(secret, o.commitment, o.nullifier);
-        // We need the change amount; localStorage is the simplest hint.
-        // Without it we'd have to brute-force possible amounts — not done yet.
         for (const [savedCommitment, data] of savedByCommitment.entries()) {
           const amount = Number(BigInt(data.amountStroops));
           const derived = await deriveCommitment(changeNonce, amount);
@@ -148,11 +148,11 @@ export default function WithdrawPage() {
             const nullifier = await deriveNullifier(changeNonce, CHANGE_WEEK);
             candidates.push({
               kind: 'change',
+              asset: o.asset,
               leafIndex: null,
               nonce: changeNonce,
               amount,
               week: CHANGE_WEEK,
-              asset: 'XLM',
               commitment: derived,
               nullifier,
             });
@@ -162,41 +162,33 @@ export default function WithdrawPage() {
         }
       }
 
-      // Any localStorage entries we couldn't match against a spent original
-      // (e.g. saved from a different device or a different vault) — surface
-      // them too so we don't silently hide funds.
+      // Orphan localStorage entries — keep showing them, default to their
+      // stored asset (or XLM for legacy entries).
       for (const [commitment, data] of savedByCommitment.entries()) {
         const amount = Number(BigInt(data.amountStroops));
         const nullifier = await deriveNullifier(data.nonce, CHANGE_WEEK);
         candidates.push({
           kind: 'change',
+          asset: data.asset ?? 'XLM',
           leafIndex: null,
           nonce: data.nonce,
           amount,
           week: CHANGE_WEEK,
-          asset: 'XLM',
           commitment,
           nullifier,
         });
       }
 
-      // 3) Filter:
-      //    - Original deposits: must exist on-chain (CommitmentNullifierHash
-      //      stored at deposit time) AND nullifier not yet spent.
-      //    - Change UTXOs: vault does NOT store a binding for them until
-      //      bind_change_nullifier is called, so `commitment_exists` would
-      //      always return false. We trust the localStorage entry (saved
-      //      after partial_withdraw confirms) and check only that the
-      //      change-nullifier hasn't already been re-spent.
+      // 3) Filter — query the correct per-asset vault for each candidate.
       const active: MyDeposit[] = [];
       for (const c of candidates) {
         if (c.kind === 'change') {
-          const spent = await vaultIsNullifierSpent(c.nullifier);
+          const spent = await vaultIsNullifierSpent(c.nullifier, c.asset);
           if (!spent) active.push(c);
         } else {
           const [exists, spent] = await Promise.all([
-            vaultCommitmentExists(c.commitment),
-            vaultIsNullifierSpent(c.nullifier),
+            vaultCommitmentExists(c.commitment, c.asset),
+            vaultIsNullifierSpent(c.nullifier, c.asset),
           ]);
           if (exists && !spent) active.push(c);
         }
@@ -247,6 +239,7 @@ export default function WithdrawPage() {
     });
     await vaultBindChangeNullifier({
       caller:           address,
+      asset:            d.asset,
       proofHex,
       changeCommitment: d.commitment,
       changeNullifier:  d.nullifier,
@@ -266,7 +259,7 @@ export default function WithdrawPage() {
       const recipientHash = await computeRecipientHash();
 
       setProvingStep('Fetching vault Merkle root…');
-      const { root } = await getVaultStats();
+      const { root } = await getVaultStats(d.asset);
 
       setProvingStep('Generating ZK proof (stub)…');
       const { generateShieldedProof } = await import('@/lib/prover');
@@ -286,6 +279,7 @@ export default function WithdrawPage() {
       setProvingStep('Signing withdrawal in Freighter…');
       const { hash } = await vaultWithdraw({
         caller:        address,
+        asset:         d.asset,
         proofHex,
         commitment:    d.commitment,
         root:          root || '0'.repeat(64),
@@ -338,7 +332,7 @@ export default function WithdrawPage() {
       const recipientHash = await computeRecipientHash();
 
       setProvingStep('Fetching vault Merkle root…');
-      const { root } = await getVaultStats();
+      const { root } = await getVaultStats(d.asset);
 
       setProvingStep('Generating ZK proof (stub)…');
       const { generatePartialWithdrawProof } = await import('@/lib/prover');
@@ -362,6 +356,7 @@ export default function WithdrawPage() {
       setProvingStep('Signing partial withdrawal in Freighter…');
       const { hash } = await vaultPartialWithdraw({
         caller:          address,
+        asset:           d.asset,
         proofHex,
         inCommitment:    d.commitment,
         inNullifier:     d.nullifier,
@@ -384,6 +379,7 @@ export default function WithdrawPage() {
           nonce: changeNonce,
           amountStroops: changeStroops.toString(),
           createdAt: Date.now(),
+          asset: d.asset, // remember which vault this change lives in
         }),
       );
 

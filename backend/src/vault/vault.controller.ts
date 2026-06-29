@@ -23,8 +23,10 @@ export class VaultController {
   async events(
     @Query('sinceLeaf') sinceLeaf: string | undefined,
     @Query('limit') limit: string | undefined,
+    @Query('contractId') contractIdParam: string | undefined,
   ) {
-    const contractId = this.stellar.contracts.vault;
+    // Default to XLM vault for back-compat with single-vault callers.
+    const contractId = contractIdParam ?? this.stellar.contracts.vault;
     const sinceLeafN = parseInt(sinceLeaf ?? '0', 10) || 0;
     const limitN = Math.min(parseInt(limit ?? '500', 10) || 500, 1000);
 

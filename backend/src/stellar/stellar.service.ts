@@ -20,7 +20,9 @@ export interface ContractIds {
   honk12w: string;
   honk24w: string;
   verifier: string;
-  vault: string;
+  vault: string;        // back-compat = XLM vault
+  vaultXLM: string;
+  vaultUSDC: string;
   credit: string;
 }
 

@@ -36,19 +36,54 @@ export const CONTRACT_IDS = {
   honk12w: process.env.NEXT_PUBLIC_ZAVA_HONK_12W ?? '',
   honk24w: process.env.NEXT_PUBLIC_ZAVA_HONK_24W ?? '',
   verifier: process.env.NEXT_PUBLIC_ZAVA_VERIFIER ?? '',
+  vaultXLM:  process.env.NEXT_PUBLIC_ZAVA_VAULT_XLM  ?? process.env.NEXT_PUBLIC_ZAVA_VAULT ?? '',
+  vaultUSDC: process.env.NEXT_PUBLIC_ZAVA_VAULT_USDC ?? '',
+  /** @deprecated use vaultXLM / vaultUSDC */
   vault: process.env.NEXT_PUBLIC_ZAVA_VAULT ?? '',
   credit: process.env.NEXT_PUBLIC_ZAVA_CREDIT ?? '',
   xlmSac: process.env.NEXT_PUBLIC_XLM_SAC ?? 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
+  usdcSac: process.env.NEXT_PUBLIC_USDC_SAC ?? 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA',
+  usdcIssuer: process.env.NEXT_PUBLIC_USDC_ISSUER ?? 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
 };
+
+export type Asset = 'XLM' | 'USDC';
+export const ALL_ASSETS: Asset[] = ['XLM', 'USDC'];
+
+/** Pick the right vault contract id for an asset. */
+export function vaultIdFor(asset: Asset): string {
+  return asset === 'USDC' ? CONTRACT_IDS.vaultUSDC : CONTRACT_IDS.vaultXLM;
+}
+
+/**
+ * Convert a per-asset stroop amount to USD-equivalent stroops (1 USD = 1e7).
+ * USDC SAC uses 7-decimal precision and is 1:1 USD.
+ * XLM uses 7-decimal precision; valued at $0.10 for testnet purposes.
+ */
+const XLM_USD_RATE = 0.10;
+export function toUsdStroops(amountStroops: number | bigint, asset: Asset): number {
+  const n = typeof amountStroops === 'bigint' ? Number(amountStroops) : amountStroops;
+  return asset === 'USDC' ? n : Math.floor(n * XLM_USD_RATE);
+}
 
 export type SavingsRange = 'R5' | 'R20' | 'R50' | 'R200' | 'R500';
 
-export const SAVINGS_RANGES: Array<{ key: SavingsRange; minXlm: number; labelUsd: number }> = [
-  { key: 'R5',   minXlm:   50, labelUsd:   5 },
-  { key: 'R20',  minXlm:  200, labelUsd:  20 },
-  { key: 'R50',  minXlm:  500, labelUsd:  50 },
-  { key: 'R200', minXlm: 2000, labelUsd: 200 },
-  { key: 'R500', minXlm: 5000, labelUsd: 500 },
+/**
+ * Range tiers expressed as USD-equivalent minimums. Each tier matches any
+ * deposit whose USD-equivalent meets the floor — so 50 XLM (~$5) AND 5 USDC
+ * both satisfy R5.
+ */
+export const SAVINGS_RANGES: Array<{
+  key: SavingsRange;
+  minUsd: number;
+  minXlm: number;
+  minUsdc: number;
+  labelUsd: number;
+}> = [
+  { key: 'R5',   minUsd:   5, minXlm:   50, minUsdc:   5, labelUsd:   5 },
+  { key: 'R20',  minUsd:  20, minXlm:  200, minUsdc:  20, labelUsd:  20 },
+  { key: 'R50',  minUsd:  50, minXlm:  500, minUsdc:  50, labelUsd:  50 },
+  { key: 'R200', minUsd: 200, minXlm: 2000, minUsdc: 200, labelUsd: 200 },
+  { key: 'R500', minUsd: 500, minXlm: 5000, minUsdc: 500, labelUsd: 500 },
 ];
 
 export const NETWORK = {
@@ -201,6 +236,48 @@ export async function getCreditTier(wallet: string): Promise<CreditRecord | null
 export interface AssetBalance {
   asset: string;    // 'XLM', 'USDC', etc.
   balance: string;  // decimal string, e.g. "500.0000000"
+}
+
+/**
+ * Check if a wallet already has a USDC trustline. Stellar classic assets need
+ * an explicit trustline before the account can hold them. Without one, USDC
+ * deposits into the vault will fail.
+ */
+export async function hasUsdcTrustline(address: string): Promise<boolean> {
+  try {
+    const balances = await getAccountBalances(address);
+    return balances.some((b) => b.asset === 'USDC');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build a trustline-establishing transaction the user can sign with Freighter.
+ * Adds USDC:CircleIssuer trustline with no limit. Costs ~0.5 XLM in account
+ * reserves (returned if the trustline is later removed).
+ */
+export async function buildAddUsdcTrustlineTx(fromAddress: string): Promise<string> {
+  const account = await server.getAccount(fromAddress);
+  const usdcAsset = new Asset('USDC', CONTRACT_IDS.usdcIssuer);
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(Operation.changeTrust({ asset: usdcAsset }))
+    .setTimeout(120)
+    .build();
+  return tx.toXDR();
+}
+
+export async function submitSignedXdr(signedXdr: string): Promise<string> {
+  const signedTx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
+  const sent = await server.sendTransaction(signedTx);
+  if (sent.status === 'ERROR') {
+    throw new Error(`Trustline tx failed: ${JSON.stringify(sent.errorResult ?? sent)}`);
+  }
+  await pollTx(sent.hash);
+  return sent.hash;
 }
 
 export async function getAccountBalances(address: string): Promise<AssetBalance[]> {
@@ -394,18 +471,19 @@ function i128ScVal(n: bigint): xdr.ScVal {
   return nativeToScVal(n, { type: 'i128' });
 }
 
-/** Deposit real XLM into the vault with a hidden commitment + encrypted note. */
+/** Deposit tokens into the per-asset vault with a hidden commitment + encrypted note. */
 export async function vaultDeposit(params: {
   depositor: string;
+  asset: Asset;
   commitment: string;      // hex 64 chars
-  nullifier: string;       // hex 64 chars — stored as binding, NOT revealed publicly
+  nullifier: string;       // hex 64 chars
   amountStroops: bigint;
   encryptedNote: string;   // hex — AES-GCM ciphertext only recipient can decrypt
 }): Promise<{ hash: string; leafIndex: number }> {
   const encBuf = Buffer.from(params.encryptedNote, 'hex');
   const { hash, returnValue } = await buildSignAndSubmit(
     params.depositor,
-    CONTRACT_IDS.vault,
+    vaultIdFor(params.asset),
     'deposit',
     [
       addressScVal(params.depositor),
@@ -418,16 +496,17 @@ export async function vaultDeposit(params: {
   return { hash, leafIndex: Number(returnValue ?? 0) };
 }
 
-/** Withdraw shielded XLM from the vault using a ZK proof. */
+/** Withdraw shielded tokens from the per-asset vault using a ZK proof. */
 export async function vaultWithdraw(params: {
   caller: string;
+  asset: Asset;
   proofHex: string;
-  commitment: string;   // hex 64 chars — must match what was deposited
-  root: string;         // hex 64 chars
-  nullifier: string;    // hex 64 chars
-  recipientHash: string;// hex 64 chars
+  commitment: string;
+  root: string;
+  nullifier: string;
+  recipientHash: string;
   amountStroops: bigint;
-  recipient: string;    // stellar address
+  recipient: string;
 }): Promise<{ hash: string }> {
   const amountBytes = amountToBytes32(params.amountStroops);
   const publicInputs = nativeToScVal({
@@ -451,7 +530,7 @@ export async function vaultWithdraw(params: {
   );
   const { hash } = await buildSignAndSubmit(
     params.caller,
-    CONTRACT_IDS.vault,
+    vaultIdFor(params.asset),
     'withdraw',
     [
       bytesScVal(proofBuf),
@@ -463,28 +542,40 @@ export async function vaultWithdraw(params: {
   return { hash };
 }
 
-/** Read the current Merkle root and total XLM locked in the vault. */
-export async function getVaultStats(): Promise<{ root: string; totalLocked: bigint; leafCount: number }> {
+/** Read the current Merkle root + total locked for one asset's vault. */
+export async function getVaultStats(asset: Asset = 'XLM'): Promise<{
+  asset: Asset;
+  root: string;
+  totalLocked: bigint;
+  leafCount: number;
+}> {
+  const vaultId = vaultIdFor(asset);
   const [root, locked, count] = await Promise.all([
-    simulate(CONTRACT_IDS.vault, 'get_root', []),
-    simulate(CONTRACT_IDS.vault, 'get_total_locked', []),
-    simulate(CONTRACT_IDS.vault, 'get_leaf_count', []),
+    simulate(vaultId, 'get_root', []),
+    simulate(vaultId, 'get_total_locked', []),
+    simulate(vaultId, 'get_leaf_count', []),
   ]);
   return {
+    asset,
     root: root ? bufferToHex(root) : '',
     totalLocked: BigInt(String(locked ?? 0)),
     leafCount: Number(count ?? 0),
   };
 }
 
-export async function vaultIsNullifierSpent(nullifier: string): Promise<boolean> {
-  const res = await simulate(CONTRACT_IDS.vault, 'is_nullifier_spent', [bytesN32(nullifier)]);
+/** Convenience: read both XLM and USDC vault stats in parallel. */
+export async function getAllVaultStats() {
+  return Promise.all(ALL_ASSETS.map((a) => getVaultStats(a)));
+}
+
+export async function vaultIsNullifierSpent(nullifier: string, asset: Asset = 'XLM'): Promise<boolean> {
+  const res = await simulate(vaultIdFor(asset), 'is_nullifier_spent', [bytesN32(nullifier)]);
   return Boolean(res);
 }
 
-/** Check whether a commitment hash exists in the vault's Merkle tree. */
-export async function vaultCommitmentExists(commitment: string): Promise<boolean> {
-  const res = await simulate(CONTRACT_IDS.vault, 'commitment_exists', [bytesN32(commitment)]);
+/** Check whether a commitment hash exists in the per-asset vault's Merkle tree. */
+export async function vaultCommitmentExists(commitment: string, asset: Asset = 'XLM'): Promise<boolean> {
+  const res = await simulate(vaultIdFor(asset), 'commitment_exists', [bytesN32(commitment)]);
   return Boolean(res);
 }
 
@@ -495,14 +586,15 @@ export async function vaultCommitmentExists(commitment: string): Promise<boolean
  */
 export async function vaultPartialWithdraw(params: {
   caller: string;
+  asset: Asset;
   proofHex: string;
-  inCommitment: string;       // hex 64
-  inNullifier: string;        // hex 64
-  inRoot: string;             // hex 64
-  recipient: string;          // stellar G-address
-  recipientHash: string;      // hex 64
+  inCommitment: string;
+  inNullifier: string;
+  inRoot: string;
+  recipient: string;
+  recipientHash: string;
   withdrawStroops: bigint;
-  changeCommitment: string;   // hex 64
+  changeCommitment: string;
 }): Promise<{ hash: string }> {
   const proof = Buffer.from(
     params.proofHex.startsWith('0x') ? params.proofHex.slice(2) : params.proofHex,
@@ -510,7 +602,7 @@ export async function vaultPartialWithdraw(params: {
   );
   const { hash } = await buildSignAndSubmit(
     params.caller,
-    CONTRACT_IDS.vault,
+    vaultIdFor(params.asset),
     'partial_withdraw',
     [
       bytesScVal(proof),
@@ -538,10 +630,11 @@ export async function vaultPartialWithdraw(params: {
  */
 export async function vaultTransferShielded(params: {
   caller: string;
+  asset: Asset;
   proofHex: string;
-  inNullifier: string;     // hex 64
-  outCommitment: string;   // hex 64 — derived under recipient's scanKey
-  root: string;            // hex 64
+  inNullifier: string;
+  outCommitment: string;
+  root: string;
 }): Promise<{ hash: string }> {
   const proof = Buffer.from(
     params.proofHex.startsWith('0x') ? params.proofHex.slice(2) : params.proofHex,
@@ -549,7 +642,7 @@ export async function vaultTransferShielded(params: {
   );
   const { hash } = await buildSignAndSubmit(
     params.caller,
-    CONTRACT_IDS.vault,
+    vaultIdFor(params.asset),
     'transfer_shielded',
     [
       bytesScVal(proof),
@@ -563,6 +656,7 @@ export async function vaultTransferShielded(params: {
 
 export async function vaultBindChangeNullifier(params: {
   caller: string;
+  asset: Asset;
   proofHex: string;
   changeCommitment: string;
   changeNullifier: string;
@@ -573,7 +667,7 @@ export async function vaultBindChangeNullifier(params: {
   );
   const { hash } = await buildSignAndSubmit(
     params.caller,
-    CONTRACT_IDS.vault,
+    vaultIdFor(params.asset),
     'bind_change_nullifier',
     [
       bytesScVal(proof),
@@ -587,9 +681,10 @@ export async function vaultBindChangeNullifier(params: {
 // ─── Vault event scanner ──────────────────────────────────────────────────────
 
 export interface VaultDepositEvent {
+  asset: Asset;
   leafIndex: number;
-  commitment: string;   // hex
-  encryptedNote: string; // hex — decrypt with user secret to read amount/nonce/week
+  commitment: string;
+  encryptedNote: string;
   txHash: string;
   ledger: number;
 }
@@ -597,18 +692,19 @@ export interface VaultDepositEvent {
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
 /**
- * Fetch vault deposit events. Prefers our backend indexer (which archives
- * events forever) and falls back to Soroban RPC (which only retains the last
- * ~24h on testnet). The indexer is the primary source so old notes don't
- * disappear from the user's view.
+ * Fetch vault deposit events for one specific asset's vault. Prefers our
+ * backend indexer (Postgres-backed, never expires); falls back to Soroban RPC
+ * for the ~24 h retention window.
  */
-export async function getVaultDepositEvents(): Promise<VaultDepositEvent[]> {
-  const vaultId = CONTRACT_IDS.vault;
+async function fetchVaultEvents(asset: Asset): Promise<VaultDepositEvent[]> {
+  const vaultId = vaultIdFor(asset);
   if (!vaultId) return [];
 
-  // Primary: backend indexer (Postgres-backed, never expires)
+  // Primary: backend indexer.
   try {
-    const res = await fetch(`${API_BASE}/vault/events?limit=1000`, { cache: 'no-store' });
+    const res = await fetch(`${API_BASE}/vault/events?contractId=${vaultId}&limit=1000`, {
+      cache: 'no-store',
+    });
     if (res.ok) {
       const data = (await res.json()) as {
         events: Array<{
@@ -619,19 +715,18 @@ export async function getVaultDepositEvents(): Promise<VaultDepositEvent[]> {
           ledger: number;
         }>;
       };
-      if (data.events && data.events.length > 0) return data.events;
+      if (data.events && data.events.length > 0) {
+        return data.events.map((e) => ({ ...e, asset }));
+      }
     }
   } catch (err) {
     console.warn('[zava] indexer fetch failed, falling back to RPC:', err);
   }
 
-  // Fallback: Soroban RPC (24h retention only)
+  // Fallback: Soroban RPC.
   try {
-    // Soroban RPC silently caps lookback at ~8 000 ledgers — going further
-    // returns zero events even when matches exist near the tip.
     const latest = await server.getLatestLedger();
     const startLedger = Math.max(1, latest.sequence - 7_200);
-
     const response = await server.getEvents({
       startLedger,
       filters: [{ type: 'contract', contractIds: [vaultId] }],
@@ -654,6 +749,7 @@ export async function getVaultDepositEvents(): Promise<VaultDepositEvent[]> {
         if (!decoded?.commitment || !decoded?.encrypted_note) continue;
 
         events.push({
+          asset,
           leafIndex: Number(decoded.leaf_index ?? 0),
           commitment: Buffer.from(decoded.commitment).toString('hex'),
           encryptedNote: Buffer.from(decoded.encrypted_note).toString('hex'),
@@ -664,9 +760,15 @@ export async function getVaultDepositEvents(): Promise<VaultDepositEvent[]> {
     }
     return events;
   } catch (err) {
-    console.error('[zava] getVaultDepositEvents failed:', err);
+    console.error('[zava] fetchVaultEvents failed:', err);
     return [];
   }
+}
+
+/** Fetch deposit events from BOTH vaults, merged into a single asset-tagged list. */
+export async function getVaultDepositEvents(): Promise<VaultDepositEvent[]> {
+  const results = await Promise.all(ALL_ASSETS.map((a) => fetchVaultEvents(a)));
+  return results.flat();
 }
 
 // ─── ZavaCredit (bulletproof, vault-backed) ──────────────────────────────────

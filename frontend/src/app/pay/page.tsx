@@ -7,7 +7,13 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import * as freighter from '@/lib/freighter';
-import { vaultDeposit, CONTRACT_IDS } from '@/lib/stellar';
+import {
+  buildAddUsdcTrustlineTx,
+  CONTRACT_IDS,
+  hasUsdcTrustline,
+  submitSignedXdr,
+  vaultDeposit,
+} from '@/lib/stellar';
 import { deriveCommitment, deriveNullifier } from '@/lib/crypto';
 import { encryptNote } from '@/lib/noteEncryption';
 import { saveDeposit } from '@/lib/savingsStore';
@@ -35,6 +41,9 @@ function PayContent() {
   const [txHash, setTxHash]         = useState<string | null>(null);
   const [leafIndex, setLeafIndex]   = useState<number | null>(null);
   const [error, setError]           = useState<string | null>(null);
+  /** Cached trustline state — only relevant for USDC payments. */
+  const [trustlineReady, setTrustlineReady] = useState<boolean | null>(null);
+  const [establishingTrustline, setEstablishingTrustline] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -42,6 +51,36 @@ function PayContent() {
       if (s.connected && s.address) setWallet(s.address);
     })();
   }, []);
+
+  // Check whether the payer's wallet can hold USDC. For XLM payments this is
+  // always true (native asset, no trustline needed).
+  useEffect(() => {
+    if (!wallet) return;
+    if (asset === 'XLM') { setTrustlineReady(true); return; }
+    setTrustlineReady(null);
+    void hasUsdcTrustline(wallet).then((ok) => setTrustlineReady(ok));
+  }, [wallet, asset]);
+
+  async function establishTrustline() {
+    if (!wallet) return;
+    setError(null);
+    setEstablishingTrustline(true);
+    try {
+      const xdr = await buildAddUsdcTrustlineTx(wallet);
+      const signed = await freighter.signTransaction(xdr, {
+        network: 'TESTNET',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        accountToSign: wallet,
+      });
+      await submitSignedXdr(signed);
+      const ok = await hasUsdcTrustline(wallet);
+      setTrustlineReady(ok);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setEstablishingTrustline(false);
+    }
+  }
 
   const connect = useCallback(async () => {
     setError(null);
@@ -84,6 +123,7 @@ function PayContent() {
 
       const { hash, leafIndex: idx } = await vaultDeposit({
         depositor:     wallet,
+        asset,
         commitment,
         nullifier,
         amountStroops,
@@ -181,7 +221,9 @@ function PayContent() {
 
             <div className="rounded-md border border-border bg-subtle px-4 py-3 text-xs text-muted">
               <p className="font-medium text-foreground mb-1">Funds go to vault:</p>
-              <p className="font-mono break-all">{CONTRACT_IDS.vault || '…'}</p>
+              <p className="font-mono break-all">
+                {(asset === 'USDC' ? CONTRACT_IDS.vaultUSDC : CONTRACT_IDS.vaultXLM) || '…'}
+              </p>
             </div>
 
             {!wallet ? (
@@ -196,6 +238,24 @@ function PayContent() {
                     {wallet.slice(0, 6)}…{wallet.slice(-6)}
                   </span>
                 </div>
+
+                {asset === 'USDC' && trustlineReady === false && (
+                  <div className="rounded-md border border-warning/40 bg-subtle p-3 space-y-2">
+                    <p className="text-sm font-medium">USDC trustline required</p>
+                    <p className="text-xs text-muted">
+                      USDC is a Stellar issued asset — your wallet needs a one-time
+                      trustline before it can hold or send USDC. Costs ≈ 0.5 XLM in
+                      reserves (refundable if you remove the trustline later).
+                    </p>
+                    <Button
+                      size="sm"
+                      onClick={establishTrustline}
+                      disabled={establishingTrustline}
+                    >
+                      {establishingTrustline ? 'Establishing…' : 'Add USDC trustline'}
+                    </Button>
+                  </div>
+                )}
 
                 {step === 'done' && txHash ? (
                   <div className="space-y-3">
@@ -224,7 +284,12 @@ function PayContent() {
                 ) : (
                   <Button
                     onClick={pay}
-                    disabled={step !== 'idle' || !amount || Number(amount) <= 0}
+                    disabled={
+                      step !== 'idle' ||
+                      !amount ||
+                      Number(amount) <= 0 ||
+                      (asset === 'USDC' && trustlineReady !== true)
+                    }
                   >
                     {step === 'depositing'
                       ? 'Signing in Freighter…'

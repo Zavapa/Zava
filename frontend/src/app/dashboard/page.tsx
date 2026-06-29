@@ -6,20 +6,24 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Stat } from '@/components/ui/Stat';
+import { ScoreGauge } from '@/components/ScoreGauge';
 import { useWallet } from '@/components/WalletProvider';
 import {
   AssetBalance,
   CommitmentRow,
   CreditRecordOnChain,
   getAccountBalances,
+  getAllVaultStats,
   getCommitmentCount,
   getCommitments,
   getCreditRecord,
   getVaultDepositEvents,
-  getVaultStats,
   SAVINGS_RANGES,
+  toUsdStroops,
 } from '@/lib/stellar';
 import { decryptNote } from '@/lib/noteEncryption';
+import { useZcs } from '@/lib/useZcs';
+import { api } from '@/lib/api';
 
 function fmt(balance: string | number) {
   const n = typeof balance === 'number' ? balance : parseFloat(balance);
@@ -47,26 +51,32 @@ export default function OverviewPage() {
   const [error, setError]   = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Scan vault events and decrypt the ones belonging to this wallet
+  // Scan BOTH vaults' events, decrypt the ones belonging to this wallet, and
+  // aggregate both pools' totals.
   const scanMyVault = useCallback(async () => {
     if (!scanKey) return;
     try {
-      const [events, stats] = await Promise.all([
+      const [events, allStats] = await Promise.all([
         getVaultDepositEvents(),
-        getVaultStats(),
+        getAllVaultStats(),
       ]);
-      let mine = 0;
-      let total = 0n;
+      let mineUsdStroops = 0n;
+      let mineCount = 0;
       for (const ev of events) {
         const note = await decryptNote(ev.encryptedNote, scanKey);
         if (note) {
-          mine += 1;
-          total += BigInt(note.amount);
+          mineCount += 1;
+          mineUsdStroops += BigInt(toUsdStroops(note.amount, ev.asset));
         }
       }
-      setVaultMineCount(mine);
-      setVaultMineXlm(Number(total) / 10_000_000);
-      setVaultTotalXlm(Number(stats.totalLocked) / 10_000_000);
+      // Total pool is also in USD-equivalent so the comparison "your slice of pool" is fair.
+      const totalUsdStroops = allStats.reduce(
+        (sum, s) => sum + BigInt(toUsdStroops(Number(s.totalLocked), s.asset)),
+        0n,
+      );
+      setVaultMineCount(mineCount);
+      setVaultMineXlm(Number(mineUsdStroops) / 10_000_000);
+      setVaultTotalXlm(Number(totalUsdStroops) / 10_000_000);
     } catch {
       // ignore — vault may not have events yet
     }
@@ -99,6 +109,51 @@ export default function OverviewPage() {
     return () => { cancelled = true; };
   }, [address, scanMyVault]);
 
+  // Client-side ZCS computation — pulls plan + decrypted deposits and turns
+  // them into a single 300–850 score with five factors.
+  const zcs = useZcs();
+
+  // Sharing-link state — borrower issues a one-time URL to give a lender.
+  const [issuingLink, setIssuingLink] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  async function issueShareLink() {
+    if (!zcs.report) return;
+    setIssuingLink(true);
+    setShareError(null);
+    try {
+      const r = zcs.report;
+      const issued = await api.issueScore({
+        wallet: r.wallet,
+        score: r.score,
+        tier: r.tier,
+        loanEligibleStroops: r.loanEligibleStroops,
+        factors: r.factors,
+        signals: r.signals,
+        plan: r.plan ? {
+          cadence: r.plan.cadence,
+          targetRange: r.plan.targetRange,
+          label: r.plan.label,
+        } : null,
+        streak: r.streak,
+      });
+      setShareUrl(`${window.location.origin}/lender?token=${issued.token}`);
+    } catch (e) {
+      setShareError((e as Error).message);
+    } finally {
+      setIssuingLink(false);
+    }
+  }
+
+  async function copyShareLink() {
+    if (!shareUrl) return;
+    await navigator.clipboard.writeText(shareUrl);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  }
+
   if (!address) return null;
 
   const xlm = balances.find((b) => b.asset === 'XLM');
@@ -121,6 +176,96 @@ export default function OverviewPage() {
           <Link href="/dashboard/withdraw"><Button variant="secondary">Withdraw</Button></Link>
         </div>
       </div>
+
+      {/* ────────── Zava Credit Score ────────── */}
+      <Card className="border-foreground/20">
+        <CardHeader>
+          <div className="flex items-start justify-between">
+            <div>
+              <CardTitle>Zava Credit Score</CardTitle>
+              <CardDescription>
+                A privacy-preserving FICO-like score (300–850) computed locally from your
+                vault activity. Lenders only ever see this score, never your amounts.
+              </CardDescription>
+            </div>
+            {!zcs.plan && (
+              <Link href="/dashboard/plan">
+                <Button size="sm" variant="secondary">Set savings plan</Button>
+              </Link>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {zcs.loading ? (
+            <p className="text-sm text-muted">Computing score…</p>
+          ) : !zcs.report ? (
+            <p className="text-sm text-muted">No data yet.</p>
+          ) : (
+            <div className="grid gap-6 lg:grid-cols-[auto_1fr]">
+              {/* Gauge */}
+              <div className="flex flex-col items-center gap-3">
+                <ScoreGauge score={zcs.report.score} tier={zcs.report.tier} />
+                <Badge tone={
+                  zcs.report.tier === 'Excellent' || zcs.report.tier === 'Very Good' ? 'success'
+                    : zcs.report.tier === 'Good' || zcs.report.tier === 'Fair' ? 'warning'
+                    : 'danger'
+                }>
+                  {zcs.report.tier}
+                </Badge>
+                <div className="text-center text-xs text-muted">
+                  Streak: <strong className="text-foreground">{zcs.report.streak}</strong>
+                  {' '}{zcs.plan?.cadence === 'weekly' ? 'weeks' : 'months'}
+                </div>
+              </div>
+
+              {/* Factor breakdown */}
+              <div className="space-y-4">
+                <div className="space-y-2 text-sm">
+                  <FactorBar label="Savings consistency"  value={zcs.report.factors.consistency}     weight="35%" />
+                  <FactorBar label="Inflow capacity"       value={zcs.report.factors.inflow}          weight="25%" />
+                  <FactorBar label="Withdrawal discipline" value={zcs.report.factors.withdrawal}      weight="20%" />
+                  <FactorBar label="Vault tenure"          value={zcs.report.factors.tenure}          weight="10%" />
+                  <FactorBar label="Diversification"       value={zcs.report.factors.diversification} weight="10%" />
+                </div>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 text-xs">
+                  <SignalChip on={zcs.report.signals.meetsSavingsGoal}      label="Meets savings goal" />
+                  <SignalChip on={zcs.report.signals.monthlyInflowAbove500} label="Inflow ≥ $500 / mo" />
+                  <SignalChip on={zcs.report.signals.lowWithdrawalRatio}    label="Low withdrawal ratio" />
+                  <SignalChip on={zcs.report.signals.tenureAbove90d}        label="Tenure > 90d" />
+                  <SignalChip on={zcs.report.signals.diversifiedPayers}     label="Diversified income" />
+                </div>
+
+                {/* Sharing link */}
+                <div className="rounded-md border border-border bg-subtle p-4 space-y-2">
+                  <p className="text-sm font-medium">Generate a sharing link</p>
+                  <p className="text-xs text-muted">
+                    Send this link to a lender. It exposes your score + the five risk-factor
+                    signals — nothing else. Expires after 7 days.
+                  </p>
+                  {shareUrl ? (
+                    <div className="space-y-2">
+                      <div className="rounded-md border border-border bg-surface p-2 text-xs font-mono break-all">
+                        {shareUrl}
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="secondary" onClick={copyShareLink}>
+                          {linkCopied ? 'Copied!' : 'Copy link'}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setShareUrl(null)}>Clear</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Button size="sm" onClick={issueShareLink} disabled={issuingLink}>
+                      {issuingLink ? 'Generating…' : 'Create sharing link'}
+                    </Button>
+                  )}
+                  {shareError && <p className="text-sm text-danger">{shareError}</p>}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ────────── Private Vault — your shielded funds ────────── */}
       <Card className="border-foreground/20">
@@ -297,6 +442,36 @@ export default function OverviewPage() {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function FactorBar({ label, value, weight }: { label: string; value: number; weight: string }) {
+  const pct = Math.round(value * 100);
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs">
+        <span className="text-muted">{label} <span className="text-foreground/60">({weight})</span></span>
+        <span className="font-medium">{pct}/100</span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-subtle">
+        <div
+          className="h-full rounded-full bg-foreground transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function SignalChip({ on, label }: { on: boolean; label: string }) {
+  return (
+    <div className={
+      'flex items-center gap-1.5 rounded-md border px-2 py-1.5 ' +
+      (on ? 'border-border bg-surface text-foreground' : 'border-border bg-subtle text-muted')
+    }>
+      <span className={on ? 'text-foreground' : 'text-muted'}>{on ? '✓' : '○'}</span>
+      <span className="text-[11px]">{label}</span>
     </div>
   );
 }

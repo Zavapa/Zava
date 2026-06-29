@@ -55,53 +55,69 @@ export class VaultIndexerService implements OnModuleInit, OnModuleDestroy {
     }, POLL_INTERVAL_MS);
   }
 
-  /** One polling iteration. Idempotent — safe to call multiple times. */
+  /** Vault contract IDs the indexer monitors (one per asset). */
+  private vaultContractIds(): string[] {
+    const ids = new Set<string>();
+    const xlm = this.stellar.contracts.vaultXLM;
+    const usdc = this.stellar.contracts.vaultUSDC;
+    if (xlm)  ids.add(xlm);
+    if (usdc) ids.add(usdc);
+    if (ids.size === 0 && this.stellar.contracts.vault) {
+      ids.add(this.stellar.contracts.vault);
+    }
+    return [...ids];
+  }
+
+  /** One polling iteration across ALL configured vaults. */
   async indexOnce(): Promise<{ scanned: number; inserted: number }> {
     if (this.running) return { scanned: 0, inserted: 0 };
     this.running = true;
     try {
-      const contractId = this.stellar.contracts.vault;
-      if (!contractId) {
-        this.logger.warn('ZAVA_VAULT not configured — skipping index');
+      const vaults = this.vaultContractIds();
+      if (vaults.length === 0) {
+        this.logger.warn('No vault contracts configured — skipping index');
         return { scanned: 0, inserted: 0 };
       }
 
-      const startLedger = await this.resolveStartLedger(contractId);
-      const events = await this.stellar.server.getEvents({
-        startLedger,
-        filters: [{ type: 'contract', contractIds: [contractId] }],
-        limit: PAGE_SIZE,
-      });
-
-      let inserted = 0;
-      for (const ev of events.events ?? []) {
-        const note = this.decodeDepositEvent(ev);
-        if (!note) continue;
-
-        // Upsert by (contractId, leafIndex) — second attempts are no-ops.
-        const exists = await this.repo.findOne({
-          where: { contractId, leafIndex: note.leafIndex },
+      let totalScanned = 0;
+      let totalInserted = 0;
+      for (const contractId of vaults) {
+        const startLedger = await this.resolveStartLedger(contractId);
+        const events = await this.stellar.server.getEvents({
+          startLedger,
+          filters: [{ type: 'contract', contractIds: [contractId] }],
+          limit: PAGE_SIZE,
         });
-        if (exists) continue;
 
-        await this.repo.save(
-          this.repo.create({
-            contractId,
-            leafIndex: note.leafIndex,
-            commitment: note.commitment,
-            encryptedNote: note.encryptedNote,
-            txHash: ev.txHash ?? '',
-            ledger: ev.ledger ?? 0,
-            ledgerCloseTime: String(toUnix(ev.ledgerClosedAt)),
-          }),
-        );
-        inserted += 1;
+        totalScanned += events.events?.length ?? 0;
+        for (const ev of events.events ?? []) {
+          const note = this.decodeDepositEvent(ev);
+          if (!note) continue;
+
+          const exists = await this.repo.findOne({
+            where: { contractId, leafIndex: note.leafIndex },
+          });
+          if (exists) continue;
+
+          await this.repo.save(
+            this.repo.create({
+              contractId,
+              leafIndex: note.leafIndex,
+              commitment: note.commitment,
+              encryptedNote: note.encryptedNote,
+              txHash: ev.txHash ?? '',
+              ledger: ev.ledger ?? 0,
+              ledgerCloseTime: String(toUnix(ev.ledgerClosedAt)),
+            }),
+          );
+          totalInserted += 1;
+        }
       }
 
-      if (inserted > 0) {
-        this.logger.log(`indexed ${inserted} new vault events`);
+      if (totalInserted > 0) {
+        this.logger.log(`indexed ${totalInserted} new vault events across ${vaults.length} vault(s)`);
       }
-      return { scanned: events.events?.length ?? 0, inserted };
+      return { scanned: totalScanned, inserted: totalInserted };
     } finally {
       this.running = false;
     }

@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Put } from '@nestjs/common';
 import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
-import { Cadence, SavingsRange } from './plan.entity';
+import type { Cadence, SavingsRange } from './plan.entity';
 import { PlanService } from './plan.service';
 
 class UpsertPlanDto {
