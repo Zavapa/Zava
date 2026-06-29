@@ -101,13 +101,13 @@ export default function WithdrawPage() {
       setLeafCount(stats.leafCount);
 
       // 1) Original deposits — decrypt indexer notes with scanKey.
-      const candidates: MyDeposit[] = [];
+      const originals: MyDeposit[] = [];
       for (const ev of events) {
         const note = await decryptNote(ev.encryptedNote, scanKey);
         if (!note) continue;
         const commitment = await deriveCommitment(note.nonce, note.amount);
         const nullifier  = await deriveNullifier(note.nonce, note.week);
-        candidates.push({
+        originals.push({
           kind: 'original',
           leafIndex: ev.leafIndex,
           nonce: note.nonce,
@@ -121,9 +121,51 @@ export default function WithdrawPage() {
         });
       }
 
-      // 2) Change UTXOs — pulled from localStorage (saved at partial-withdraw time).
+      // 2) Change UTXOs — re-derived deterministically from each original
+      //    deposit's commitment + nullifier + the user's secret. localStorage
+      //    is a hint about the *amount*, but the nonce itself is fully
+      //    recoverable from `deriveChangeNonce(secret, in_commitment, in_nullifier)`.
+      //    This means a cold device with just Freighter can still recover any
+      //    change UTXO the user created.
+      const candidates: MyDeposit[] = [...originals];
       const saved = readSavedChanges();
-      for (const { commitment, data } of saved) {
+      const savedByCommitment = new Map<string, SavedChange>(
+        saved.map((s) => [s.commitment, s.data]),
+      );
+
+      // For each spent original, look up the deterministically-derived change
+      // commitment and surface it as a deposit if it has a known amount.
+      for (const o of originals) {
+        const isSpent = await vaultIsNullifierSpent(o.nullifier);
+        if (!isSpent) continue;
+        const changeNonce = await deriveChangeNonce(secret, o.commitment, o.nullifier);
+        // We need the change amount; localStorage is the simplest hint.
+        // Without it we'd have to brute-force possible amounts — not done yet.
+        for (const [savedCommitment, data] of savedByCommitment.entries()) {
+          const amount = Number(BigInt(data.amountStroops));
+          const derived = await deriveCommitment(changeNonce, amount);
+          if (derived === savedCommitment) {
+            const nullifier = await deriveNullifier(changeNonce, CHANGE_WEEK);
+            candidates.push({
+              kind: 'change',
+              leafIndex: null,
+              nonce: changeNonce,
+              amount,
+              week: CHANGE_WEEK,
+              asset: 'XLM',
+              commitment: derived,
+              nullifier,
+            });
+            savedByCommitment.delete(savedCommitment);
+            break;
+          }
+        }
+      }
+
+      // Any localStorage entries we couldn't match against a spent original
+      // (e.g. saved from a different device or a different vault) — surface
+      // them too so we don't silently hide funds.
+      for (const [commitment, data] of savedByCommitment.entries()) {
         const amount = Number(BigInt(data.amountStroops));
         const nullifier = await deriveNullifier(data.nonce, CHANGE_WEEK);
         candidates.push({

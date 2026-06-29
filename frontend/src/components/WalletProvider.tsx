@@ -102,7 +102,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setDisplayNameState(raw);
   };
 
-  // Probe on mount — do NOT prompt for signing here, just restore from cache.
+  // Probe on mount. If Freighter is connected but we don't have a cached
+  // secret (e.g. user cleared localStorage), automatically prompt Freighter
+  // once to re-derive it — this is the recovery path that lets users access
+  // their vault from any device with the same wallet.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     void (async () => {
@@ -112,10 +115,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         setAddress(status.address);
         setNetwork(status.network);
         setNetworkPassphrase(status.networkPassphrase);
+        const hasCached =
+          !!localStorage.getItem(`${SECRET_STORAGE_KEY}.${status.address}`);
         await ensureSecret(
           status.address,
           status.networkPassphrase ?? TESTNET_PASSPHRASE,
-          false,
+          /* allowSigningPrompt */ !hasCached,
         );
         loadDisplayName(status.address);
       }
