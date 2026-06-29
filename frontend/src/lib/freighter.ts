@@ -144,7 +144,7 @@ export async function deriveSecretFromFreighter(
   }
 
   // Hash the signature into a 32-byte field-safe secret.
-  const digest = await crypto.subtle.digest('SHA-256', sig);
+  const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(sig));
   const bytes = new Uint8Array(digest);
   // Mask top 3 bits so the value stays below the BN254 scalar modulus.
   bytes[0] &= 0x1f;

@@ -224,8 +224,8 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(new ArrayBuffer(a.length + b.length));
   out.set(a); out.set(b, a.length);
   return out;
 }

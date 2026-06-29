@@ -24,7 +24,7 @@ export const MAX_MEMO_BYTES = 256;
 async function deriveNoteKey(secretHex: string): Promise<CryptoKey> {
   const prefix = new TextEncoder().encode('zava_note_v1');
   const secretBytes = hexToBytes(secretHex);
-  const material = new Uint8Array(prefix.length + secretBytes.length);
+  const material = new Uint8Array(new ArrayBuffer(prefix.length + secretBytes.length));
   material.set(prefix);
   material.set(secretBytes, prefix.length);
   const raw = await crypto.subtle.digest('SHA-256', material);
@@ -32,11 +32,11 @@ async function deriveNoteKey(secretHex: string): Promise<CryptoKey> {
 }
 
 /** Pad plaintext to a fixed size using a 0x00 sentinel + zero-fill. */
-function padNote(jsonBytes: Uint8Array): Uint8Array {
+function padNote(jsonBytes: Uint8Array): Uint8Array<ArrayBuffer> {
   if (jsonBytes.length + 1 > PADDED_PLAINTEXT_BYTES) {
     throw new Error(`Note plaintext too large (${jsonBytes.length} > ${PADDED_PLAINTEXT_BYTES - 1})`);
   }
-  const out = new Uint8Array(PADDED_PLAINTEXT_BYTES);
+  const out = new Uint8Array(new ArrayBuffer(PADDED_PLAINTEXT_BYTES));
   out.set(jsonBytes);
   out[jsonBytes.length] = 0x00; // explicit terminator
   return out; // rest of buffer is already zero-filled
@@ -59,7 +59,7 @@ export async function encryptNote(note: VaultNote, secretHex: string): Promise<s
     }
   }
   const key = await deriveNoteKey(secretHex);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const iv = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(12)));
   const jsonBytes = new TextEncoder().encode(JSON.stringify(note));
   const plaintext = padNote(jsonBytes);
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
@@ -89,9 +89,9 @@ export async function decryptNote(
   }
 }
 
-function hexToBytes(hex: string): Uint8Array {
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const bytes = new Uint8Array(clean.length / 2);
+  const bytes = new Uint8Array(new ArrayBuffer(clean.length / 2));
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
   }

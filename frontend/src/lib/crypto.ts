@@ -12,7 +12,7 @@
 
 async function sha256(...parts: Uint8Array[]): Promise<string> {
   const total = parts.reduce((n, p) => n + p.length, 0);
-  const buf = new Uint8Array(total);
+  const buf = new Uint8Array(new ArrayBuffer(total));
   let offset = 0;
   for (const part of parts) {
     buf.set(part, offset);
@@ -22,9 +22,9 @@ async function sha256(...parts: Uint8Array[]): Promise<string> {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function hexToBytes(hex: string): Uint8Array {
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const out = new Uint8Array(clean.length / 2);
+  const out = new Uint8Array(new ArrayBuffer(clean.length / 2));
   for (let i = 0; i < out.length; i++) {
     out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
   }
@@ -85,7 +85,7 @@ export async function deriveChangeNonce(
     hexToBytes(inNullifierHex),
   ];
   const total = parts.reduce((n, p) => n + p.length, 0);
-  const buf = new Uint8Array(total);
+  const buf = new Uint8Array(new ArrayBuffer(total));
   let off = 0;
   for (const p of parts) {
     buf.set(p, off);

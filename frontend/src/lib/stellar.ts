@@ -2,7 +2,7 @@
 
 import {
   Address,
-  Asset,
+  Asset as StellarAsset,
   BASE_FEE,
   Contract,
   Horizon,
@@ -259,7 +259,7 @@ export async function hasUsdcTrustline(address: string): Promise<boolean> {
  */
 export async function buildAddUsdcTrustlineTx(fromAddress: string): Promise<string> {
   const account = await server.getAccount(fromAddress);
-  const usdcAsset = new Asset('USDC', CONTRACT_IDS.usdcIssuer);
+  const usdcAsset = new StellarAsset('USDC', CONTRACT_IDS.usdcIssuer);
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
@@ -364,8 +364,8 @@ export async function sendPayment(params: {
 
   const stellarAsset =
     params.asset === 'XLM'
-      ? Asset.native()
-      : new Asset('USDC', USDC_ISSUER_TESTNET);
+      ? StellarAsset.native()
+      : new StellarAsset('USDC', USDC_ISSUER_TESTNET);
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -805,7 +805,7 @@ export async function claimCredit(params: {
     },
     {
       type: {
-        savings_range: null, // already constructed as enum ScVal above
+        savings_range: [null, null], // already constructed as enum ScVal above
         commitments: ['symbol', null],
         nullifiers:  ['symbol', null],
         weeks:       ['symbol', null],

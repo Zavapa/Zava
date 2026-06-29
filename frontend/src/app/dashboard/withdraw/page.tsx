@@ -213,7 +213,7 @@ export default function WithdrawPage() {
   async function computeRecipientHash(): Promise<string> {
     const { Address } = await import('@stellar/stellar-sdk');
     const xdr = new Address(recipient).toScVal().toXDR();
-    const hashBuf = await crypto.subtle.digest('SHA-256', xdr);
+    const hashBuf = await crypto.subtle.digest('SHA-256', new Uint8Array(xdr));
     return Array.from(new Uint8Array(hashBuf))
       .map((b) => b.toString(16).padStart(2, '0')).join('');
   }
