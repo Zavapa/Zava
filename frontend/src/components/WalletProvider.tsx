@@ -19,9 +19,16 @@ interface WalletState {
   network: string | null;
   networkPassphrase: string | null;
   displayName: string | null;
-  secret: string | null;  // 32-byte hex — NEVER shared, never in any URL
-  zavaId: string | null;  // sha256("zava_id_v1"   || secret) — public payment identity
-  scanKey: string | null; // sha256("zava_scan_v1" || secret) — included in payment links so payer can encrypt notes; lets holder READ but NOT SPEND
+  /** 32-byte hex — NEVER shared, never in any URL. Derived deterministically
+   *  from a Freighter-signed identity message so reconnecting any device
+   *  produces the same value. localStorage is just a cache. */
+  secret: string | null;
+  /** sha256("zava_id_v1" || secret) — public payment identity. */
+  zavaId: string | null;
+  /** sha256("zava_scan_v1" || secret) — viewing key. Included in payment
+   *  links so payers can encrypt notes; can READ incoming payments but NOT
+   *  spend (spending requires `secret`). */
+  scanKey: string | null;
   connecting: boolean;
   error: string | null;
   connect: () => Promise<void>;
@@ -30,6 +37,8 @@ interface WalletState {
 }
 
 const WalletContext = createContext<WalletState | null>(null);
+
+const TESTNET_PASSPHRASE = 'Test SDF Network ; September 2015';
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [installed, setInstalled] = useState(false);
@@ -43,7 +52,57 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Probe on mount.
+  /**
+   * Derive scanKey + zavaId from the secret and update state.
+   */
+  const installSecret = useCallback(async (addr: string, s: string) => {
+    setSecret(s);
+    localStorage.setItem(`${SECRET_STORAGE_KEY}.${addr}`, s);
+    const enc = new TextEncoder();
+    const sBytes = hexToBytes(s);
+    const idHash = await crypto.subtle.digest(
+      'SHA-256',
+      concat(enc.encode('zava_id_v1'), sBytes),
+    );
+    setZavaId(toHex(idHash));
+    const scanHash = await crypto.subtle.digest(
+      'SHA-256',
+      concat(enc.encode('zava_scan_v1'), sBytes),
+    );
+    setScanKey(toHex(scanHash));
+  }, []);
+
+  /**
+   * Make sure we have a secret for `addr`. Order of preference:
+   *   1. Already in localStorage (fast path) — use it as cache.
+   *   2. Ask Freighter to sign a deterministic identity message — derive
+   *      a stable secret from the signature.
+   * Step 2 prompts the user. We only do it on explicit `connect()`, never
+   * on initial mount.
+   */
+  const ensureSecret = useCallback(
+    async (addr: string, passphrase: string, allowSigningPrompt: boolean) => {
+      const cached = localStorage.getItem(`${SECRET_STORAGE_KEY}.${addr}`);
+      if (cached) {
+        await installSecret(addr, cached);
+        return;
+      }
+      if (!allowSigningPrompt) return; // mount path — don't pop a sign prompt
+      const s = await freighter.deriveSecretFromFreighter(
+        addr,
+        passphrase || TESTNET_PASSPHRASE,
+      );
+      await installSecret(addr, s);
+    },
+    [installSecret],
+  );
+
+  const loadDisplayName = (addr: string) => {
+    const raw = localStorage.getItem(`zava.name.v1.${addr}`);
+    setDisplayNameState(raw);
+  };
+
+  // Probe on mount — do NOT prompt for signing here, just restore from cache.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     void (async () => {
@@ -53,32 +112,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         setAddress(status.address);
         setNetwork(status.network);
         setNetworkPassphrase(status.networkPassphrase);
-        loadLocalSecret(status.address);
+        await ensureSecret(
+          status.address,
+          status.networkPassphrase ?? TESTNET_PASSPHRASE,
+          false,
+        );
         loadDisplayName(status.address);
       }
     })();
-  }, []);
-
-  const loadLocalSecret = (addr: string) => {
-    const raw = localStorage.getItem(`${SECRET_STORAGE_KEY}.${addr}`);
-    const s = raw ?? generateHexSecret();
-    if (!raw) localStorage.setItem(`${SECRET_STORAGE_KEY}.${addr}`, s);
-    setSecret(s);
-    const enc = new TextEncoder();
-    const sBytes = hexToBytes(s);
-    // zavaId  = sha256("zava_id_v1"   || secret) — public identity, safe to share
-    void crypto.subtle.digest('SHA-256', concat(enc.encode('zava_id_v1'), sBytes))
-      .then((h) => setZavaId(toHex(h)));
-    // scanKey = sha256("zava_scan_v1" || secret) — viewing key only, goes in payment link
-    // Knowing scanKey lets you see incoming payments but CANNOT withdraw (need secret for that)
-    void crypto.subtle.digest('SHA-256', concat(enc.encode('zava_scan_v1'), sBytes))
-      .then((h) => setScanKey(toHex(h)));
-  };
-
-  const loadDisplayName = (addr: string) => {
-    const raw = localStorage.getItem(`zava.name.v1.${addr}`);
-    setDisplayNameState(raw);
-  };
+  }, [ensureSecret]);
 
   const setDisplayName = useCallback(
     (name: string) => {
@@ -101,14 +143,21 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setAddress(status.address);
       setNetwork(status.network);
       setNetworkPassphrase(status.networkPassphrase);
-      loadLocalSecret(status.address);
+      // Autosign: prompt Freighter once on connect so the deterministic
+      // secret is materialised and the user can use any device with the
+      // same wallet to recover their funds.
+      await ensureSecret(
+        status.address,
+        status.networkPassphrase ?? TESTNET_PASSPHRASE,
+        true,
+      );
       loadDisplayName(status.address);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setConnecting(false);
     }
-  }, []);
+  }, [ensureSecret]);
 
   const disconnect = useCallback(() => {
     setAddress(null);
@@ -160,15 +209,6 @@ export function useWallet(): WalletState {
   const ctx = useContext(WalletContext);
   if (!ctx) throw new Error('useWallet must be used inside WalletProvider');
   return ctx;
-}
-
-function generateHexSecret(): string {
-  // Mask to keep the value below the BN254 scalar modulus so it works as a
-  // private witness in the Noir/UltraHonk circuits later.
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  bytes[0] &= 0x1f;
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function hexToBytes(hex: string): Uint8Array {

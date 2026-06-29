@@ -28,6 +28,7 @@ function PayContent() {
   const asset        = (params.get('asset') ?? 'XLM') as 'XLM' | 'USDC';
 
   const [amount, setAmount]         = useState(suggestedAmt);
+  const [memo, setMemo]             = useState('');
   const [wallet, setWallet]         = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [step, setStep]             = useState<Step>('idle');
@@ -71,7 +72,13 @@ function PayContent() {
       // The recipient decrypts with their own scanKey (derived from their secret at load time).
       // Knowing scanKey lets you READ notes but CANNOT withdraw — that needs the real secret.
       const encryptedNote = await encryptNote(
-        { amount: Number(amountStroops), nonce, week: weekNumber, asset },
+        {
+          amount: Number(amountStroops),
+          nonce,
+          week: weekNumber,
+          asset,
+          memo: memo.trim() || undefined,
+        },
         scanKey,
       );
 
@@ -90,7 +97,7 @@ function PayContent() {
       setError((e as Error).message);
       setStep('idle');
     }
-  }, [wallet, amount, nonce, weekNumber, zavaId, asset]);
+  }, [wallet, amount, memo, nonce, weekNumber, scanKey, asset]);
 
   // Validate — zavaId, scanKey, and nonce must all be 64 hex chars
   const isValidLink = zavaId.length === 64 && scanKey.length === 64 && nonce.length === 64;
@@ -150,6 +157,27 @@ function PayContent() {
               hint="Your exact amount is hidden inside the vault — not visible on-chain."
               disabled={step !== 'idle'}
             />
+
+            {/* Private memo — encrypted with recipient's scanKey, opaque on-chain.
+                See lib/noteEncryption.ts for the fixed-size padding scheme. */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground">
+                Private note (optional)
+              </label>
+              <textarea
+                value={memo}
+                onChange={(e) => setMemo(e.target.value.slice(0, 256))}
+                placeholder="e.g. Project Atlas — March invoice. Encrypted; only the recipient can read it."
+                rows={3}
+                maxLength={256}
+                disabled={step !== 'idle'}
+                className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm placeholder:text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
+              />
+              <p className="text-xs text-muted">
+                {memo.length}/256 — encrypted before going on-chain. Only the recipient&apos;s
+                scan key can decrypt it.
+              </p>
+            </div>
 
             <div className="rounded-md border border-border bg-subtle px-4 py-3 text-xs text-muted">
               <p className="font-medium text-foreground mb-1">Funds go to vault:</p>

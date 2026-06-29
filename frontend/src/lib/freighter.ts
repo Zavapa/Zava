@@ -88,3 +88,65 @@ export async function signTransaction(
   if ('error' in res && res.error) throw new Error(String(res.error));
   return (res as { signedTxXdr: string }).signedTxXdr;
 }
+
+/**
+ * Have Freighter sign a deterministic "identity" transaction so we can derive
+ * a stable per-wallet secret without storing one in localStorage. The
+ * transaction is never submitted — we only need the Ed25519 signature.
+ *
+ * Stellar's Ed25519 is deterministic: signing identical bytes with the same
+ * key always yields the same signature. By fixing every input (sequence = 0,
+ * fee = BASE_FEE, no timebounds, a constant ManageData operation) we get the
+ * same signature every time → the same secret, on every device, forever.
+ *
+ * Returns a 32-byte hex string suitable for use as `secret` in the Zava ZK
+ * pipeline (top 3 bits masked to stay below the BN254 scalar modulus).
+ */
+export async function deriveSecretFromFreighter(
+  address: string,
+  networkPassphrase: string,
+): Promise<string> {
+  const {
+    Account,
+    BASE_FEE,
+    Operation,
+    TransactionBuilder,
+  } = await import('@stellar/stellar-sdk');
+
+  // Synthetic source account with sequence 0 — never submitted, so it doesn't
+  // need to exist on-chain.
+  const synthetic = new Account(address, '0');
+  const tx = new TransactionBuilder(synthetic, {
+    fee: BASE_FEE,
+    networkPassphrase,
+    // No timebounds → identical XDR every time.
+  })
+    .addOperation(
+      Operation.manageData({
+        name: 'zava_identity',
+        value: 'v1',
+      }),
+    )
+    .setTimeout(0)
+    .build();
+
+  const signedXdr = await signTransaction(tx.toXDR(), {
+    network: 'TESTNET',
+    networkPassphrase,
+    accountToSign: address,
+  });
+
+  // Extract the raw 64-byte Ed25519 signature from the signed envelope.
+  const signedTx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
+  const sig = signedTx.signatures[0]?.signature();
+  if (!sig || sig.length === 0) {
+    throw new Error('Freighter returned no signature');
+  }
+
+  // Hash the signature into a 32-byte field-safe secret.
+  const digest = await crypto.subtle.digest('SHA-256', sig);
+  const bytes = new Uint8Array(digest);
+  // Mask top 3 bits so the value stays below the BN254 scalar modulus.
+  bytes[0] &= 0x1f;
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}

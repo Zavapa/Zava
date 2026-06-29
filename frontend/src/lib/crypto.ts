@@ -62,3 +62,37 @@ export function randomFieldHex(): string {
   bytes[0] &= 0x1f;
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+/**
+ * Deterministic change-UTXO nonce derived from (secret, input commitment,
+ * input nullifier). Because the inputs uniquely identify the partial
+ * withdrawal, the same user spending the same input always produces the
+ * same change nonce — so the change UTXO is recoverable purely from the
+ * Freighter-derived secret, no localStorage needed.
+ *
+ * The output is masked to fit the BN254 scalar field.
+ */
+export async function deriveChangeNonce(
+  secretHex: string,
+  inCommitmentHex: string,
+  inNullifierHex: string,
+): Promise<string> {
+  const enc = new TextEncoder();
+  const parts = [
+    hexToBytes(secretHex),
+    enc.encode('zava_change_v1'),
+    hexToBytes(inCommitmentHex),
+    hexToBytes(inNullifierHex),
+  ];
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    buf.set(p, off);
+    off += p.length;
+  }
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  const bytes = new Uint8Array(digest);
+  bytes[0] &= 0x1f; // BN254-safe
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}

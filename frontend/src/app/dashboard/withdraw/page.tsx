@@ -19,7 +19,7 @@ import {
   VaultDepositEvent,
 } from '@/lib/stellar';
 import { decryptNote, VaultNote } from '@/lib/noteEncryption';
-import { deriveCommitment, deriveNullifier, randomFieldHex } from '@/lib/crypto';
+import { deriveChangeNonce, deriveCommitment, deriveNullifier } from '@/lib/crypto';
 
 interface MyDeposit {
   /** "original" = paid in via the link; "change" = leftover from a partial withdrawal. */
@@ -33,6 +33,8 @@ interface MyDeposit {
   asset: string;
   commitment: string;
   nullifier: string;
+  /** Private memo from the payer (Zcash-style). Undefined when none was attached. */
+  memo?: string;
   /** Only set for originals; needed only for display. */
   event?: VaultDepositEvent;
 }
@@ -112,6 +114,7 @@ export default function WithdrawPage() {
           amount: note.amount,
           week: note.week,
           asset: note.asset,
+          memo: note.memo,
           commitment,
           nullifier,
           event: ev,
@@ -135,15 +138,26 @@ export default function WithdrawPage() {
         });
       }
 
-      // 3) Filter: keep only commitments that exist on-chain AND whose
-      //    nullifier hasn't been spent yet.
+      // 3) Filter:
+      //    - Original deposits: must exist on-chain (CommitmentNullifierHash
+      //      stored at deposit time) AND nullifier not yet spent.
+      //    - Change UTXOs: vault does NOT store a binding for them until
+      //      bind_change_nullifier is called, so `commitment_exists` would
+      //      always return false. We trust the localStorage entry (saved
+      //      after partial_withdraw confirms) and check only that the
+      //      change-nullifier hasn't already been re-spent.
       const active: MyDeposit[] = [];
       for (const c of candidates) {
-        const [exists, spent] = await Promise.all([
-          vaultCommitmentExists(c.commitment),
-          vaultIsNullifierSpent(c.nullifier),
-        ]);
-        if (exists && !spent) active.push(c);
+        if (c.kind === 'change') {
+          const spent = await vaultIsNullifierSpent(c.nullifier);
+          if (!spent) active.push(c);
+        } else {
+          const [exists, spent] = await Promise.all([
+            vaultCommitmentExists(c.commitment),
+            vaultIsNullifierSpent(c.nullifier),
+          ]);
+          if (exists && !spent) active.push(c);
+        }
       }
 
       setMyDeposits(active);
@@ -272,14 +286,12 @@ export default function WithdrawPage() {
     try {
       await ensureBound(d);
 
-      // Fresh nonce for change UTXO — kept in localStorage so it shows up in
-      // the deposits list after the partial completes.
-      const changeNonce = randomFieldHex();
+      // Deterministic change-UTXO nonce derived from (secret, in_commitment,
+      // in_nullifier). The same user spending the same input always produces
+      // the same change nonce — so the change UTXO is recoverable from just
+      // the Freighter-derived secret on any device, no localStorage needed.
+      const changeNonce = await deriveChangeNonce(secret, d.commitment, d.nullifier);
       const changeCommitment = await deriveCommitment(changeNonce, Number(changeStroops));
-      localStorage.setItem(
-        `${CHANGE_PREFIX}${changeCommitment}`,
-        JSON.stringify({ nonce: changeNonce, amountStroops: changeStroops.toString(), createdAt: Date.now() }),
-      );
 
       const recipientHash = await computeRecipientHash();
 
@@ -320,9 +332,21 @@ export default function WithdrawPage() {
 
       setTxHash(hash);
       setProvingStep('');
-      // If we just partial-withdrew from a CHANGE UTXO, its old localStorage
-      // entry is dead (nullifier now spent). Remove it. The new change UTXO
-      // is already saved above.
+
+      // Tx confirmed: persist the new change UTXO so the user can find it on
+      // future visits. Done AFTER success so failed/reverted txs don't leave
+      // a stale localStorage entry.
+      localStorage.setItem(
+        `${CHANGE_PREFIX}${changeCommitment}`,
+        JSON.stringify({
+          nonce: changeNonce,
+          amountStroops: changeStroops.toString(),
+          createdAt: Date.now(),
+        }),
+      );
+
+      // If the input we just spent WAS itself a change UTXO, its old
+      // localStorage entry is now dead (nullifier spent). Remove it.
       if (d.kind === 'change') {
         localStorage.removeItem(`${CHANGE_PREFIX}${d.commitment}`);
       }
@@ -461,6 +485,18 @@ export default function WithdrawPage() {
                       </div>
                       {isActive && <span className="text-xs text-muted">{provingStep}</span>}
                     </div>
+
+                    {/* Private memo — decrypted client-side, visible only to you */}
+                    {d.memo && (
+                      <div className="rounded-md border border-border bg-subtle px-3 py-2">
+                        <p className="text-[10px] font-medium uppercase tracking-wider text-muted">
+                          Private note from sender
+                        </p>
+                        <p className="mt-1 text-sm whitespace-pre-wrap break-words text-foreground">
+                          {d.memo}
+                        </p>
+                      </div>
+                    )}
 
                     <div className="flex flex-wrap items-end gap-2">
                       <div className="flex-1 min-w-[180px]">
