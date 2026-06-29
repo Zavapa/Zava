@@ -22,16 +22,24 @@ import { AppService } from './app.service';
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.getOrThrow<string>('database.host'),
-        port: config.getOrThrow<number>('database.port'),
-        username: config.getOrThrow<string>('database.username'),
-        password: config.getOrThrow<string>('database.password'),
-        database: config.getOrThrow<string>('database.database'),
-        autoLoadEntities: true,
-        synchronize: true,
-      }),
+      useFactory: (config: ConfigService) => {
+        const url = config.get<string>('database.url');
+        const base = {
+          type: 'postgres' as const,
+          autoLoadEntities: true,
+          synchronize: true,
+          ssl: url ? { rejectUnauthorized: false } : false,
+        };
+        if (url) return { ...base, url };
+        return {
+          ...base,
+          host: config.getOrThrow<string>('database.host'),
+          port: config.getOrThrow<number>('database.port'),
+          username: config.getOrThrow<string>('database.username'),
+          password: config.getOrThrow<string>('database.password'),
+          database: config.getOrThrow<string>('database.database'),
+        };
+      },
     }),
     StellarModule,
     UsersModule,

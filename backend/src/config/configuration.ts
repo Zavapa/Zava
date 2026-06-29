@@ -2,6 +2,7 @@ export default () => ({
   port: parseInt(process.env.PORT ?? '4000', 10),
   corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
   database: {
+    url: process.env.DATABASE_URL,
     host: process.env.DATABASE_HOST ?? 'localhost',
     port: parseInt(process.env.DATABASE_PORT ?? '5432', 10),
     username: process.env.DATABASE_USER ?? 'zava',
