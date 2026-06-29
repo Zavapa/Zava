@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { useWallet } from '@/components/WalletProvider';
 import { depositCommitment, getCommitmentCount } from '@/lib/stellar';
-import { deriveCommitment, deriveNullifier } from '@/lib/crypto';
+import { deriveCommitment, deriveNullifier, randomFieldHex } from '@/lib/crypto';
 import { saveDeposit } from '@/lib/savingsStore';
 import { encryptNote } from '@/lib/noteEncryption';
 
@@ -17,11 +17,9 @@ type Currency = 'XLM' | 'USDC';
 
 const CURRENCIES: Currency[] = ['XLM', 'USDC'];
 
-function generateNonce(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
+// Nonce must be a valid BN254 field element (value < ~2^254) so it can be
+// used as a private witness in the Noir/UltraHonk circuits later.
+const generateNonce = randomFieldHex;
 
 function savePaymentNonce(weekNumber: number, nonce: string) {
   localStorage.setItem(`zava.payreq.v1.week.${weekNumber}`, nonce);

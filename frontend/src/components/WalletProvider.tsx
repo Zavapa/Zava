@@ -163,8 +163,11 @@ export function useWallet(): WalletState {
 }
 
 function generateHexSecret(): string {
+  // Mask to keep the value below the BN254 scalar modulus so it works as a
+  // private witness in the Noir/UltraHonk circuits later.
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
+  bytes[0] &= 0x1f;
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 

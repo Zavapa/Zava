@@ -7,6 +7,7 @@ import { UsersModule } from './users/users.module';
 import { SavingsModule } from './savings/savings.module';
 import { ProofsModule } from './proofs/proofs.module';
 import { CreditModule } from './credit/credit.module';
+import { VaultModule } from './vault/vault.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -35,6 +36,7 @@ import { AppService } from './app.service';
     SavingsModule,
     ProofsModule,
     CreditModule,
+    VaultModule,
   ],
   controllers: [AppController],
   providers: [AppService],

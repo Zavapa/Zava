@@ -10,6 +10,7 @@ const NAV = [
   { href: '/dashboard', label: 'Overview' },
   { href: '/dashboard/savings', label: 'Savings' },
   { href: '/dashboard/deposit', label: 'Deposit' },
+  { href: '/dashboard/send', label: 'Send' },
   { href: '/dashboard/withdraw', label: 'Withdraw' },
   { href: '/dashboard/credit', label: 'Credit' },
 ];

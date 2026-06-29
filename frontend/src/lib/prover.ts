@@ -1,75 +1,68 @@
-// Browser-side UltraHonk proof generation using @noir-lang/noir_js.
-// The compiled circuit (ACIR) is fetched from /circuits/zava_shielded.json.
-// This runs entirely client-side — the secret never leaves the browser.
+// Proof generation — currently STUBBED.
+//
+// The Noir circuits at contracts/circuits/zava_*.nr exist and pass their unit
+// tests; bb.js can generate real UltraHonk proofs from them in principle.
+// However the practical end-to-end flow is held up on two infra issues:
+//
+//   1. Soroban's `honk_verifier` contract uses a placeholder `verify_proof_inner`
+//      that returns true for any well-formed bytes. The yugocabrio
+//      `rs-soroban-ultrahonk` crate has a VK-format mismatch with the current
+//      `bb` releases (expects 1760 bytes, current bb generates 1825-1888) so a
+//      real verifier swap is blocked on the crate catching up.
+//
+//   2. `@aztec/bb.js` ships a webpack-wrapped browser bundle that uses
+//      top-level await. Neither Turbopack nor plain Webpack in Next 16
+//      manage to expose `Barretenberg` / `Fr` cleanly through this bundle's
+//      indirection. We tried static imports, dynamic imports, deep paths,
+//      and resolver aliases — each route hits the package's strict exports
+//      field. A clean fix would either (a) wait for bb.js to ship a regular
+//      ESM bundle without TLA, or (b) build the entire frontend with Vite,
+//      which handles this dependency natively.
+//
+// Until both are resolved we ship a 256-byte zero buffer as the proof. The
+// vault contract's commitment-nullifier binding (sha256(commitment||nullifier))
+// is the real anti-theft check today and does NOT depend on ZK verification —
+// see contract/SECURITY.md for the threat-model trade-off.
+
+const STUB_PROOF_HEX = '00'.repeat(256);
 
 export interface ShieldedProofInputs {
-  secret: string;          // hex 64 chars
-  amount: bigint;          // stroops
-  merkleRoot: string;      // hex 64 chars — current vault root
-  merklePathHex: string[]; // 20 sibling hashes, each hex 64 chars
+  secret: string;
+  amount: bigint;
+  merkleRoot: string;
+  merklePathHex: string[];
   merklePathIndices: boolean[];
-  nullifier: string;       // hex 64 chars — pedersen_hash([secret, 0])
-  recipientHash: string;   // hex 64 chars — sha256(recipient_address) or all-zeros for transfer
-  amountOut: bigint;       // 0 for transfer
-}
-
-export interface GeneratedProof {
-  proofHex: string;
-  publicInputs: {
-    root: string;
-    nullifier: string;
-    recipientHash: string;
-    amountOut: bigint;
-  };
-}
-
-let circuitCache: unknown | null = null;
-
-async function loadCircuit() {
-  if (circuitCache) return circuitCache;
-  const res = await fetch('/circuits/zava_shielded.json');
-  if (!res.ok) throw new Error('Failed to load zava_shielded circuit');
-  circuitCache = await res.json();
-  return circuitCache;
-}
-
-function hexToField(hex: string): string {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  return '0x' + clean.padStart(64, '0');
+  nullifier: string;
+  recipientHash: string;
+  amountOut: bigint;
 }
 
 export async function generateShieldedProof(
-  inputs: ShieldedProofInputs,
-): Promise<GeneratedProof> {
-  const { Noir } = await import('@noir-lang/noir_js');
-  const { UltraHonkBackend } = await import('@noir-lang/backend_barretenberg');
+  _inputs: ShieldedProofInputs,
+): Promise<{ proofHex: string }> {
+  // Tiny await to keep the call-site `async` shape stable for future swap.
+  await Promise.resolve();
+  return { proofHex: STUB_PROOF_HEX };
+}
 
-  const circuit = await loadCircuit();
+export interface PartialWithdrawProofInputs {
+  secret: string;
+  inputAmount: bigint;
+  week: bigint;
+  merklePathHex: string[];
+  merklePathIndices: boolean[];
+  changeSecret: string;
+  inCommitment: string;
+  inRoot: string;
+  inNullifier: string;
+  recipientHash: string;
+  withdrawAmount: bigint;
+  changeCommitment: string;
+}
 
-  const backend = new UltraHonkBackend(circuit as Parameters<typeof UltraHonkBackend>[0]);
-  const noir = new Noir(circuit as Parameters<typeof Noir>[0]);
-
-  const witnessInput = {
-    secret: hexToField(inputs.secret),
-    amount: inputs.amount.toString(),
-    merkle_path: inputs.merklePathHex.map(hexToField),
-    merkle_path_indices: inputs.merklePathIndices,
-    root: hexToField(inputs.merkleRoot),
-    nullifier: hexToField(inputs.nullifier),
-    recipient_hash: hexToField(inputs.recipientHash),
-    amount_out: inputs.amountOut.toString(),
-  };
-
-  const { witness } = await noir.execute(witnessInput);
-  const { proof, publicInputs } = await backend.generateProof(witness);
-
-  return {
-    proofHex: Buffer.from(proof).toString('hex'),
-    publicInputs: {
-      root: inputs.merkleRoot,
-      nullifier: inputs.nullifier,
-      recipientHash: inputs.recipientHash,
-      amountOut: inputs.amountOut,
-    },
-  };
+export async function generatePartialWithdrawProof(
+  _inputs: PartialWithdrawProofInputs,
+): Promise<{ proofHex: string }> {
+  await Promise.resolve();
+  return { proofHex: STUB_PROOF_HEX };
 }

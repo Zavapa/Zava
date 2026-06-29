@@ -482,6 +482,108 @@ export async function vaultIsNullifierSpent(nullifier: string): Promise<boolean>
   return Boolean(res);
 }
 
+/** Check whether a commitment hash exists in the vault's Merkle tree. */
+export async function vaultCommitmentExists(commitment: string): Promise<boolean> {
+  const res = await simulate(CONTRACT_IDS.vault, 'commitment_exists', [bytesN32(commitment)]);
+  return Boolean(res);
+}
+
+/**
+ * Withdraw part of a deposit. Releases `withdrawStroops` to the recipient and
+ * inserts `changeCommitment` (representing `inputStroops - withdrawStroops`)
+ * back into the pool as a new shielded note.
+ */
+export async function vaultPartialWithdraw(params: {
+  caller: string;
+  proofHex: string;
+  inCommitment: string;       // hex 64
+  inNullifier: string;        // hex 64
+  inRoot: string;             // hex 64
+  recipient: string;          // stellar G-address
+  recipientHash: string;      // hex 64
+  withdrawStroops: bigint;
+  changeCommitment: string;   // hex 64
+}): Promise<{ hash: string }> {
+  const proof = Buffer.from(
+    params.proofHex.startsWith('0x') ? params.proofHex.slice(2) : params.proofHex,
+    'hex',
+  );
+  const { hash } = await buildSignAndSubmit(
+    params.caller,
+    CONTRACT_IDS.vault,
+    'partial_withdraw',
+    [
+      bytesScVal(proof),
+      bytesN32(params.inCommitment),
+      bytesN32(params.inNullifier),
+      bytesN32(params.inRoot),
+      addressScVal(params.recipient),
+      bytesN32(params.recipientHash),
+      i128ScVal(params.withdrawStroops),
+      bytesN32(params.changeCommitment),
+    ],
+  );
+  return { hash };
+}
+
+/**
+ * Once a change commitment has been spent for the first time, bind a
+ * nullifier to it so future re-spends are protected by the same commitment-
+ * nullifier security guarantee as regular deposits.
+ */
+/**
+ * Burn one of your commitments and create a new one owned by someone else,
+ * encrypted to their scanKey. NO XLM moves on-chain — funds change owners
+ * entirely inside the shielded pool.
+ */
+export async function vaultTransferShielded(params: {
+  caller: string;
+  proofHex: string;
+  inNullifier: string;     // hex 64
+  outCommitment: string;   // hex 64 — derived under recipient's scanKey
+  root: string;            // hex 64
+}): Promise<{ hash: string }> {
+  const proof = Buffer.from(
+    params.proofHex.startsWith('0x') ? params.proofHex.slice(2) : params.proofHex,
+    'hex',
+  );
+  const { hash } = await buildSignAndSubmit(
+    params.caller,
+    CONTRACT_IDS.vault,
+    'transfer_shielded',
+    [
+      bytesScVal(proof),
+      bytesN32(params.inNullifier),
+      bytesN32(params.outCommitment),
+      bytesN32(params.root),
+    ],
+  );
+  return { hash };
+}
+
+export async function vaultBindChangeNullifier(params: {
+  caller: string;
+  proofHex: string;
+  changeCommitment: string;
+  changeNullifier: string;
+}): Promise<{ hash: string }> {
+  const proof = Buffer.from(
+    params.proofHex.startsWith('0x') ? params.proofHex.slice(2) : params.proofHex,
+    'hex',
+  );
+  const { hash } = await buildSignAndSubmit(
+    params.caller,
+    CONTRACT_IDS.vault,
+    'bind_change_nullifier',
+    [
+      bytesScVal(proof),
+      bytesN32(params.changeCommitment),
+      bytesN32(params.changeNullifier),
+    ],
+  );
+  return { hash };
+}
+
 // ─── Vault event scanner ──────────────────────────────────────────────────────
 
 export interface VaultDepositEvent {
@@ -492,51 +594,77 @@ export interface VaultDepositEvent {
   ledger: number;
 }
 
-/** Fetch all deposit events from the vault contract via Horizon. */
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
+
+/**
+ * Fetch vault deposit events. Prefers our backend indexer (which archives
+ * events forever) and falls back to Soroban RPC (which only retains the last
+ * ~24h on testnet). The indexer is the primary source so old notes don't
+ * disappear from the user's view.
+ */
 export async function getVaultDepositEvents(): Promise<VaultDepositEvent[]> {
+  const vaultId = CONTRACT_IDS.vault;
+  if (!vaultId) return [];
+
+  // Primary: backend indexer (Postgres-backed, never expires)
   try {
-    const vaultId = CONTRACT_IDS.vault;
-    if (!vaultId) return [];
-    const res = await fetch(
-      `${HORIZON_URL}/contract_events?contract_id=${vaultId}&limit=200&order=asc`,
-    );
-    if (!res.ok) return [];
-    const json = await res.json() as {
-      _embedded?: { records?: Array<{
-        tx_hash: string;
-        ledger_closed_at: string;
-        ledger: number;
-        topic: string[];
-        value: string;
-      }> };
-    };
-    const records = json._embedded?.records ?? [];
+    const res = await fetch(`${API_BASE}/vault/events?limit=1000`, { cache: 'no-store' });
+    if (res.ok) {
+      const data = (await res.json()) as {
+        events: Array<{
+          leafIndex: number;
+          commitment: string;
+          encryptedNote: string;
+          txHash: string;
+          ledger: number;
+        }>;
+      };
+      if (data.events && data.events.length > 0) return data.events;
+    }
+  } catch (err) {
+    console.warn('[zava] indexer fetch failed, falling back to RPC:', err);
+  }
+
+  // Fallback: Soroban RPC (24h retention only)
+  try {
+    // Soroban RPC silently caps lookback at ~8 000 ledgers — going further
+    // returns zero events even when matches exist near the tip.
+    const latest = await server.getLatestLedger();
+    const startLedger = Math.max(1, latest.sequence - 7_200);
+
+    const response = await server.getEvents({
+      startLedger,
+      filters: [{ type: 'contract', contractIds: [vaultId] }],
+      limit: 200,
+    });
+
     const events: VaultDepositEvent[] = [];
-    for (const r of records) {
-      // Filter for zava deposit events
-      if (!r.topic || r.topic.length < 2) continue;
+    for (const ev of response.events ?? []) {
       try {
-        const val = r.value;
-        if (!val) continue;
-        // The value is a base64-encoded XDR ScVal (DepositNote struct)
-        const decoded = scValToNative(xdr.ScVal.fromXDR(val, 'base64')) as {
-          leaf_index: number | bigint;
-          commitment: Uint8Array;
-          encrypted_note: Uint8Array;
+        const topicNames = (ev.topic ?? []).map((t) => {
+          try { return scValToNative(t); } catch { return null; }
+        });
+        if (!topicNames.some((n) => n === 'deposit')) continue;
+
+        const decoded = scValToNative(ev.value) as {
+          leaf_index?: number | bigint;
+          commitment?: Uint8Array;
+          encrypted_note?: Uint8Array;
         };
+        if (!decoded?.commitment || !decoded?.encrypted_note) continue;
+
         events.push({
           leafIndex: Number(decoded.leaf_index ?? 0),
           commitment: Buffer.from(decoded.commitment).toString('hex'),
           encryptedNote: Buffer.from(decoded.encrypted_note).toString('hex'),
-          txHash: r.tx_hash,
-          ledger: r.ledger,
+          txHash: ev.txHash ?? '',
+          ledger: ev.ledger ?? 0,
         });
-      } catch {
-        // skip malformed events
-      }
+      } catch {/* skip */}
     }
     return events;
-  } catch {
+  } catch (err) {
+    console.error('[zava] getVaultDepositEvents failed:', err);
     return [];
   }
 }
