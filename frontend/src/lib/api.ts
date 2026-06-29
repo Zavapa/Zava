@@ -160,4 +160,91 @@ export const api = {
 
   simulateLoan: (wallet: string, amountXlm: number) =>
     request<LoanDecision>(`/credit/v3/${wallet}/simulate-loan?amount=${amountXlm}`),
+
+  // ── Savings Plan ────────────────────────────────────────────────────────
+  getPlan: (wallet: string) =>
+    request<SavingsPlan>(`/plan/${wallet}`),
+
+  upsertPlan: (data: {
+    wallet: string;
+    cadence: 'weekly' | 'monthly';
+    targetRange: 'R5' | 'R20' | 'R50' | 'R200' | 'R500';
+    label?: string;
+  }) => request<SavingsPlan>('/plan', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  }),
+
+  // ── ZCS sharing tokens ─────────────────────────────────────────────────
+  issueScore: (report: IssueScoreRequest) =>
+    request<ScoreReport>('/score/issue', {
+      method: 'POST',
+      body: JSON.stringify(report),
+    }),
+
+  getScoreReport: (token: string) =>
+    request<ScoreReport>(`/score/report/${token}`),
+
+  simulateScoreLoan: (token: string, amountXlm: number) =>
+    request<ScoreLoanDecision>(`/score/report/${token}/loan?amount=${amountXlm}`),
 };
+
+export interface SavingsPlan {
+  id: string;
+  wallet: string;
+  cadence: 'weekly' | 'monthly';
+  targetRange: 'R5' | 'R20' | 'R50' | 'R200' | 'R500';
+  label: string | null;
+  startedAt: string;   // unix seconds as string
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IssueScoreRequest {
+  wallet: string;
+  score: number;
+  tier: 'Excellent' | 'Very Good' | 'Good' | 'Fair' | 'Poor';
+  loanEligibleStroops: string;
+  factors: {
+    consistency: number;
+    inflow: number;
+    withdrawal: number;
+    tenure: number;
+    diversification: number;
+  };
+  signals: {
+    meetsSavingsGoal: boolean;
+    monthlyInflowAbove500: boolean;
+    lowWithdrawalRatio: boolean;
+    tenureAbove90d: boolean;
+    diversifiedPayers: boolean;
+  };
+  plan: {
+    cadence: string;
+    targetRange: string;
+    label?: string | null;
+  } | null;
+  streak: number;
+  ttlSeconds?: number;
+}
+
+export interface ScoreReport extends IssueScoreRequest {
+  id: string;
+  token: string;
+  issuedAt: string;
+  expiresAt: string;
+}
+
+export interface ScoreLoanDecision {
+  borrower: string;
+  score: number;
+  tier: string;
+  requestedXlm: number;
+  approved: boolean;
+  approvedXlm: number;
+  maxEligibleXlm: number;
+  interestRate: number;
+  termWeeks: number;
+  totalRepayable: number;
+  decision: string;
+}

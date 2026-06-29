@@ -8,6 +8,8 @@ import { SavingsModule } from './savings/savings.module';
 import { ProofsModule } from './proofs/proofs.module';
 import { CreditModule } from './credit/credit.module';
 import { VaultModule } from './vault/vault.module';
+import { PlanModule } from './plan/plan.module';
+import { ScoreModule } from './score/score.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -37,6 +39,8 @@ import { AppService } from './app.service';
     ProofsModule,
     CreditModule,
     VaultModule,
+    PlanModule,
+    ScoreModule,
   ],
   controllers: [AppController],
   providers: [AppService],
