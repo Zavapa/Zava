@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/cn';
 import { useWallet } from './WalletProvider';
 import { Button } from './ui/Button';
+import { ZavaLogo } from './ZavaLogo';
 
 const NAV = [
   { href: '/dashboard', label: 'Overview' },
@@ -23,8 +24,8 @@ export function Header() {
     <header className="border-b border-border bg-surface">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
         <div className="flex items-center gap-10">
-          <Link href="/" className="text-base font-semibold tracking-tight">
-            zava
+          <Link href="/">
+            <ZavaLogo size={32} />
           </Link>
           {address && (
             <nav className="flex items-center gap-1">

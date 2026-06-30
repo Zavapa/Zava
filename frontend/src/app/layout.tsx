@@ -1,10 +1,21 @@
 import type { Metadata } from 'next';
-import { Space_Grotesk, Geist_Mono } from 'next/font/google';
+import localFont from 'next/font/local';
 import './globals.css';
 import { WalletProvider } from '@/components/WalletProvider';
 
-const spaceGrotesk = Space_Grotesk({ variable: '--font-space-grotesk', subsets: ['latin'] });
-const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin'] });
+const spaceGrotesk = localFont({
+  src: '../../public/fonts/space-grotesk.woff2',
+  variable: '--font-space-grotesk',
+  weight: '300 700',
+  display: 'swap',
+});
+
+const geistMono = localFont({
+  src: '../../public/fonts/geist-mono.woff2',
+  variable: '--font-geist-mono',
+  weight: '100 900',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'Zava',

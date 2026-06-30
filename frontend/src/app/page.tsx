@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
+import { ZavaLogo } from '@/components/ZavaLogo';
 
 const steps = [
   {
@@ -68,8 +69,13 @@ export default function LandingPage() {
       {/* Nav */}
       <header className="fixed inset-x-0 top-0 z-50 border-b border-border/60 bg-background/80 backdrop-blur-sm">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-          <span className="text-xl font-bold tracking-tight">zava</span>
+          <Link href="/">
+            <ZavaLogo size={34} />
+          </Link>
           <div className="flex items-center gap-4">
+            <Link href="/faq" className="text-base text-muted hover:text-foreground transition-colors">
+              FAQ
+            </Link>
             <Link
               href="/lender"
               className="text-base text-muted hover:text-foreground transition-colors"
@@ -335,8 +341,12 @@ export default function LandingPage() {
       {/* Footer */}
       <footer className="border-t border-border">
         <div className="mx-auto max-w-6xl px-6 py-8 flex flex-wrap items-center justify-between gap-4 text-sm text-muted">
-          <span>© 2025 Zava · Stellar Testnet</span>
+          <div className="flex items-center gap-2">
+            <ZavaLogo size={22} />
+            <span>© 2025 · Stellar Testnet</span>
+          </div>
           <div className="flex gap-6">
+            <Link href="/faq" className="hover:text-foreground transition-colors">FAQ</Link>
             <Link href="/lender" className="hover:text-foreground transition-colors">Lender Portal</Link>
             <Link href="/connect" className="hover:text-foreground transition-colors">Launch App</Link>
           </div>
