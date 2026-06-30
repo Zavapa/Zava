@@ -50,6 +50,16 @@ export function Header() {
           )}
         </div>
         <div className="flex items-center gap-3">
+          {address && (
+            <Link
+              href="/"
+              className="hidden items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-sm text-muted transition-colors hover:bg-subtle hover:text-foreground sm:inline-flex"
+              title="Back to landing page"
+            >
+              <span aria-hidden>←</span>
+              <span>Home</span>
+            </Link>
+          )}
           {address ? (
             <>
               <div className="hidden flex-col items-end text-right sm:flex">
