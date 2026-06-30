@@ -12,7 +12,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     // Wait 1.5s for Freighter to hydrate before deciding to bounce.
     const t = setTimeout(() => {
-      if (!address || !displayName) router.replace('/');
+      if (!address || !displayName) router.replace('/connect');
     }, 1500);
     return () => clearTimeout(t);
   }, [address, displayName, router]);
