@@ -7,7 +7,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { useWallet } from '@/components/WalletProvider';
-import { depositCommitment, getCommitmentCount } from '@/lib/stellar';
+import * as freighter from '@/lib/freighter';
+import {
+  buildAddUsdcTrustlineTx,
+  getCommitmentCount,
+  hasUsdcTrustline,
+  submitSignedXdr,
+  vaultDeposit,
+} from '@/lib/stellar';
 import { deriveCommitment, deriveNullifier, randomFieldHex } from '@/lib/crypto';
 import { saveDeposit } from '@/lib/savingsStore';
 import { encryptNote } from '@/lib/noteEncryption';
@@ -33,11 +40,15 @@ export default function DepositPage() {
   const [amount, setAmount] = useState('40');
   const [suggestedAmount, setSuggestedAmount] = useState('');
   const [weekNumber, setWeekNumber] = useState(0);
+  const [memo, setMemo] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [payLink, setPayLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  /** Trustline state — only relevant when self-depositing USDC. */
+  const [trustlineReady, setTrustlineReady] = useState<boolean | null>(null);
+  const [establishingTrustline, setEstablishingTrustline] = useState(false);
 
   useEffect(() => {
     if (!address) return;
@@ -49,22 +60,83 @@ export default function DepositPage() {
     setPayLink(null);
   }, [currency]);
 
+  // Check USDC trustline whenever the user picks USDC for a self-deposit.
+  useEffect(() => {
+    if (!address) return;
+    if (currency === 'XLM') { setTrustlineReady(true); return; }
+    setTrustlineReady(null);
+    void hasUsdcTrustline(address).then((ok) => setTrustlineReady(ok)).catch(() => setTrustlineReady(false));
+  }, [address, currency]);
+
+  async function establishTrustline() {
+    if (!address) return;
+    setError(null);
+    setEstablishingTrustline(true);
+    try {
+      const xdr = await buildAddUsdcTrustlineTx(address);
+      const signed = await freighter.signTransaction(xdr, {
+        network: 'TESTNET',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        accountToSign: address,
+      });
+      await submitSignedXdr(signed);
+      const ok = await hasUsdcTrustline(address);
+      setTrustlineReady(ok);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setEstablishingTrustline(false);
+    }
+  }
+
   async function onSelfSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!address || !secret) return;
+    if (!address || !secret || !scanKey) return;
     setError(null);
     setSuccess(null);
     setBusy(true);
     try {
-      const amountStroops = Math.floor(Number(amount) * 10_000_000);
-      if (!Number.isFinite(amountStroops) || amountStroops <= 0)
-        throw new Error(`Enter a positive amount in ${currency}.`);
-      const commitment = await deriveCommitment(secret, amountStroops);
-      const nullifier = await deriveNullifier(secret, weekNumber);
-      const { hash } = await depositCommitment({ wallet: address, commitment, nullifier, weekNumber });
-      saveDeposit(address, { week: weekNumber, timestamp: Math.floor(Date.now() / 1000), asset: currency, txHash: hash });
-      setSuccess(`Recorded on Stellar. Tx ${hash.slice(0, 10)}…`);
-      setTimeout(() => router.push('/dashboard/savings'), 1800);
+      const amountStroops = BigInt(Math.floor(Number(amount) * 10_000_000));
+      if (amountStroops <= 0n) throw new Error(`Enter a positive amount in ${currency}.`);
+
+      // Fresh per-deposit nonce — same scheme as a pay-link deposit, just
+      // generated locally because the sender and recipient are the same wallet.
+      const nonce = randomFieldHex();
+
+      // commitment binds (nonce, amount); nullifier binds (nonce, week).
+      // Both are reconstructable from the encrypted note at withdraw time.
+      const commitment = await deriveCommitment(nonce, Number(amountStroops));
+      const nullifier  = await deriveNullifier(nonce, weekNumber);
+
+      // Encrypt the note with our OWN scanKey so the withdraw page can decrypt it.
+      const encryptedNote = await encryptNote(
+        {
+          amount: Number(amountStroops),
+          nonce,
+          week: weekNumber,
+          asset: currency,
+          memo: memo.trim() || undefined,
+        },
+        scanKey,
+      );
+
+      const { hash, leafIndex } = await vaultDeposit({
+        depositor:     address,
+        asset:         currency,
+        commitment,
+        nullifier,
+        amountStroops,
+        encryptedNote,
+      });
+
+      saveDeposit(address, {
+        week: weekNumber,
+        timestamp: Math.floor(Date.now() / 1000),
+        asset: currency,
+        txHash: hash,
+      });
+      setSuccess(`Deposited into vault · leaf #${leafIndex} · tx ${hash.slice(0, 10)}…`);
+      setTimeout(() => router.push('/dashboard'), 1800);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -113,11 +185,11 @@ export default function DepositPage() {
   return (
     <div className="mx-auto max-w-xl space-y-6">
       <div>
-        <p className="text-sm text-muted">Step 1</p>
-        <h1 className="text-2xl font-semibold tracking-tight">Record a savings commitment</h1>
+        <p className="text-sm text-muted">Deposit</p>
+        <h1 className="text-2xl font-semibold tracking-tight">Add to your shielded vault</h1>
         <p className="mt-2 text-sm text-muted">
-          Your money stays in your wallet. Zava records a cryptographic hash of your
-          savings amount each week — building the ZK proof you need to unlock credit.
+          Move {currency} into the Zava vault under a hidden commitment. Your balance
+          and the deposit amount stay private — only you can withdraw.
         </p>
       </div>
 
@@ -164,7 +236,7 @@ export default function DepositPage() {
             (mode === 'self' ? 'bg-foreground text-background' : 'bg-surface text-muted hover:bg-subtle')
           }
         >
-          Record my own savings
+          Deposit to my vault
         </button>
         <button
           type="button"
@@ -181,26 +253,63 @@ export default function DepositPage() {
       {mode === 'self' ? (
         <Card>
           <CardHeader>
-            <CardTitle>Record this week&apos;s savings</CardTitle>
+            <CardTitle>Deposit to your shielded vault</CardTitle>
             <CardDescription>
-              No money moves. You are publishing a cryptographic proof that you saved
-              this amount — the exact number stays hidden from lenders.
+              Your {currency} moves into the ZavaVault under a hidden commitment. The
+              amount is encrypted on-chain; only your wallet can withdraw it.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={onSelfSubmit} className="flex flex-col gap-5">
               <Input
-                label={`Amount I saved this week (${currency})`}
+                label={`Amount (${currency})`}
                 type="number"
                 min={0.0000001}
                 step={0.0000001}
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                hint={`The ${currency} stays in your wallet. Only a hash is published on Stellar.`}
+                hint={`Locked into the ${currency} vault as a hidden commitment you own.`}
                 required
                 disabled={busy || notConnected}
               />
-              <PrivacyNote />
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">
+                  Private note (optional)
+                </label>
+                <textarea
+                  value={memo}
+                  onChange={(e) => setMemo(e.target.value.slice(0, 256))}
+                  placeholder="e.g. March emergency fund top-up"
+                  rows={2}
+                  maxLength={256}
+                  disabled={busy || notConnected}
+                  className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm placeholder:text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
+                />
+                <p className="text-xs text-muted">
+                  {memo.length}/256 — encrypted with your scan key. Only you can read it.
+                </p>
+              </div>
+
+              {currency === 'USDC' && trustlineReady === false && !notConnected && (
+                <div className="rounded-md border border-warning/40 bg-subtle p-3 space-y-2">
+                  <p className="text-sm font-medium">USDC trustline required</p>
+                  <p className="text-xs text-muted">
+                    Your wallet needs a one-time USDC trustline before it can deposit.
+                    Costs ≈ 0.5 XLM in reserves (refundable later).
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={establishTrustline}
+                    disabled={establishingTrustline}
+                  >
+                    {establishingTrustline ? 'Establishing…' : 'Add USDC trustline'}
+                  </Button>
+                </div>
+              )}
+
+              <PrivacyNote currency={currency} />
               {error && <p className="text-sm text-danger">{error}</p>}
               {success && (
                 <div className="flex items-center gap-2">
@@ -209,8 +318,15 @@ export default function DepositPage() {
                 </div>
               )}
               <div className="flex gap-2">
-                <Button type="submit" disabled={busy || notConnected}>
-                  {busy ? 'Recording…' : 'Record savings commitment'}
+                <Button
+                  type="submit"
+                  disabled={
+                    busy ||
+                    notConnected ||
+                    (currency === 'USDC' && trustlineReady !== true)
+                  }
+                >
+                  {busy ? 'Signing in Freighter…' : `Deposit ${amount || '?'} ${currency}`}
                 </Button>
                 <Button type="button" variant="secondary" onClick={() => router.push('/dashboard')} disabled={busy}>
                   Cancel
@@ -279,15 +395,15 @@ export default function DepositPage() {
   );
 }
 
-function PrivacyNote() {
+function PrivacyNote({ currency }: { currency: 'XLM' | 'USDC' }) {
   return (
     <div className="rounded-md border border-border bg-subtle px-4 py-3 text-xs text-muted space-y-2">
       <p className="font-medium text-foreground">What actually happens:</p>
       <ul className="list-inside list-disc space-y-1">
-        <li>Your {`XLM / USDC`} <strong className="text-foreground">stays in your wallet</strong> — nothing is transferred or locked</li>
-        <li>Zava publishes a <strong className="text-foreground">commitment hash</strong> (not the amount) to the savings contract</li>
-        <li>You pay a tiny Stellar gas fee (~0.00001 XLM)</li>
-        <li>Later you use a ZK proof to show lenders you saved consistently — without revealing the exact number</li>
+        <li>Your {currency} <strong className="text-foreground">locks into the ZavaVault</strong> contract under a hidden commitment</li>
+        <li>On-chain anyone can see a deposit happened — but <strong className="text-foreground">not the amount</strong> and not that it&apos;s yours</li>
+        <li>An encrypted note (only your scan key can read) is stored so you can find this deposit later</li>
+        <li>Withdraw any time from <strong className="text-foreground">/dashboard/withdraw</strong> using a ZK proof</li>
       </ul>
     </div>
   );
