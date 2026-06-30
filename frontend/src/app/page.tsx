@@ -102,16 +102,12 @@ export default function LandingPage() {
             </p>
             <div className="flex flex-wrap gap-4 pt-2">
               <Link href="/connect">
-                <Button size="lg" className="bg-white text-accent hover:bg-white/90 text-base px-8">
+                <Button size="lg" variant="light" className="text-base px-8">
                   Start Saving
                 </Button>
               </Link>
               <Link href="/lender">
-                <Button
-                  size="lg"
-                  variant="secondary"
-                  className="border-white/20 bg-white/10 text-white hover:bg-white/20 text-base px-8"
-                >
+                <Button size="lg" variant="outline-light" className="text-base px-8">
                   Lender Portal
                 </Button>
               </Link>
@@ -329,7 +325,7 @@ export default function LandingPage() {
             Start collecting your salary privately today. Build your ZK credit score. Borrow on your terms.
           </p>
           <Link href="/connect">
-            <Button size="lg" className="bg-white text-accent hover:bg-white/90 text-base px-10 mt-2">
+            <Button size="lg" variant="light" className="text-base px-10 mt-2">
               Get Started
             </Button>
           </Link>
