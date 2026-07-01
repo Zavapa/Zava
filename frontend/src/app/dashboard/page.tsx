@@ -9,17 +9,12 @@ import { MetricCard } from '@/components/ui/MetricCard';
 import { ActionCard } from '@/components/ui/ActionCard';
 import { SectionHeader } from '@/components/ui/SectionHeader';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { ActivityRow } from '@/components/ui/ActivityRow';
 import { ScoreGauge } from '@/components/ScoreGauge';
 import { useWallet } from '@/components/WalletProvider';
 import {
   AssetBalance,
-  CommitmentRow,
   CreditRecordOnChain,
   getAccountBalances,
-  getAllVaultStats,
-  getCommitmentCount,
-  getCommitments,
   getCreditRecord,
   getVaultDepositEvents,
   SAVINGS_RANGES,
@@ -46,22 +41,16 @@ export default function OverviewPage() {
   const { address, displayName, network, scanKey } = useWallet();
 
   const [balances, setBalances] = useState<AssetBalance[]>([]);
-  const [poolCount, setPoolCount] = useState<number | null>(null);
-  const [commitments, setCommitments] = useState<CommitmentRow[]>([]);
   const [credit, setCredit] = useState<CreditRecordOnChain | null>(null);
   const [vaultMineXlm, setVaultMineXlm] = useState(0);
   const [vaultMineCount, setVaultMineCount] = useState(0);
-  const [vaultTotalXlm, setVaultTotalXlm] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const scanMyVault = useCallback(async () => {
     if (!scanKey) return;
     try {
-      const [events, allStats] = await Promise.all([
-        getVaultDepositEvents(),
-        getAllVaultStats(),
-      ]);
+      const events = await getVaultDepositEvents();
       let mineUsdStroops = 0n;
       let mineCount = 0;
       for (const ev of events) {
@@ -71,13 +60,8 @@ export default function OverviewPage() {
           mineUsdStroops += BigInt(toUsdStroops(note.amount, ev.asset));
         }
       }
-      const totalUsdStroops = allStats.reduce(
-        (sum, s) => sum + BigInt(toUsdStroops(Number(s.totalLocked), s.asset)),
-        0n,
-      );
       setVaultMineCount(mineCount);
       setVaultMineXlm(Number(mineUsdStroops) / 10_000_000);
-      setVaultTotalXlm(Number(totalUsdStroops) / 10_000_000);
     } catch {
       // ignore
     }
@@ -89,16 +73,12 @@ export default function OverviewPage() {
     setLoading(true);
     void (async () => {
       try {
-        const [bals, c, rows, record] = await Promise.all([
+        const [bals, record] = await Promise.all([
           getAccountBalances(address),
-          getCommitmentCount(),
-          getCommitments(0, 50),
           getCreditRecord(address),
         ]);
         if (cancelled) return;
         setBalances(bals);
-        setPoolCount(c);
-        setCommitments(rows);
         setCredit(record);
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
@@ -374,7 +354,7 @@ export default function OverviewPage() {
             </Link>
           }
         />
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2">
           <MetricCard
             tone="subtle"
             label="Your shielded balance"
@@ -383,17 +363,13 @@ export default function OverviewPage() {
           />
           <MetricCard
             tone="subtle"
-            label="Vault pool total"
-            value={`${fmt(vaultTotalXlm)}`}
-            hint="Across all Zava users — provides anonymity"
-          />
-          <MetricCard
-            tone="subtle"
-            label="Anonymity set"
-            value={vaultMineCount > 0 && vaultTotalXlm > 0
-              ? `1 / ${poolCount ?? '?'}`
-              : '—'}
-            hint="Deposits a withdrawal could match"
+            label="Credit weeks"
+            value={credit && credit.tier !== 'None' ? credit.activeWeeks : '—'}
+            hint={
+              credit && credit.tier !== 'None'
+                ? `Range: ${SAVINGS_RANGES.find((r) => r.key === credit.savingsRange)?.minXlm} XLM/wk`
+                : 'Earn weeks by making weekly deposits'
+            }
           />
         </div>
         {vaultMineCount === 0 && !loading && (
@@ -477,69 +453,6 @@ export default function OverviewPage() {
             </CardContent>
           </Card>
         )}
-      </section>
-
-      {/* ───── Network activity ───── */}
-      <section className="grid gap-6 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-1">
-          <SectionHeader
-            eyebrow="Network"
-            title="Zava activity"
-            description="Snapshot of the Zava savings pool across all users."
-          />
-          <div className="grid gap-4">
-            <MetricCard
-              label="Pool deposits"
-              value={poolCount ?? (loading ? '…' : '—')}
-              hint="Total commitments recorded"
-            />
-            <MetricCard
-              label="Your credit weeks"
-              value={credit && credit.tier !== 'None' ? credit.activeWeeks : '—'}
-              hint={
-                credit && credit.tier !== 'None'
-                  ? `Range: ${SAVINGS_RANGES.find((r) => r.key === credit.savingsRange)?.minXlm} XLM/wk`
-                  : 'Not yet claimed'
-              }
-            />
-          </div>
-        </div>
-
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <div className="flex items-start justify-between">
-              <div>
-                <CardTitle className="text-lg">Recent pool deposits</CardTitle>
-                <CardDescription>
-                  Anonymous commitment hashes from all users — amounts hidden, identities hidden.
-                </CardDescription>
-              </div>
-              <Badge tone="neutral">Live · Stellar</Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            {loading && commitments.length === 0 ? (
-              <div className="px-6 py-12">
-                <p className="text-center text-sm text-muted">Loading from Stellar…</p>
-              </div>
-            ) : commitments.length === 0 ? (
-              <div className="px-6 py-12">
-                <p className="text-center text-sm text-muted">No deposits in pool yet.</p>
-              </div>
-            ) : (
-              <div>
-                {commitments.slice(-12).reverse().map((c, idx) => (
-                  <ActivityRow
-                    key={`${c.hash}-${idx}`}
-                    primary={`${c.hash.slice(0, 24)}…${c.hash.slice(-8)}`}
-                    secondary="Anonymous commitment"
-                    meta={new Date(c.timestamp * 1000).toLocaleString()}
-                  />
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
       </section>
 
     </div>
