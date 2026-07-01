@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
@@ -20,8 +21,9 @@ import {
   vaultWithdraw,
   VaultDepositEvent,
 } from '@/lib/stellar';
-import { decryptNote, VaultNote } from '@/lib/noteEncryption';
+import { decryptNote } from '@/lib/noteEncryption';
 import { deriveChangeNonce, deriveCommitment, deriveNullifier } from '@/lib/crypto';
+import { api, SavingsPlan } from '@/lib/api';
 
 interface MyDeposit {
   /** "original" = paid in via the link; "change" = leftover from a partial withdrawal. */
@@ -36,6 +38,8 @@ interface MyDeposit {
   week: number;
   commitment: string;
   nullifier: string;
+  /** Plan this deposit belongs to. Null = unassigned (legacy or no plan chosen). */
+  planId: string | null;
   /** Private memo from the payer (Zcash-style). Undefined when none was attached. */
   memo?: string;
   /** Only set for originals; needed only for display. */
@@ -76,18 +80,24 @@ function readSavedChanges(): Array<{ commitment: string; data: SavedChange }> {
 
 export default function WithdrawPage() {
   const { address, secret, scanKey } = useWallet();
+  const searchParams = useSearchParams();
+  const initialPlanFilter = searchParams.get('plan') ?? 'all';
 
   const [vaultLocked, setVaultLocked] = useState<bigint>(0n);
   const [leafCount, setLeafCount]     = useState(0);
   const [eventCount, setEventCount]   = useState(0);
   const [myDeposits, setMyDeposits]   = useState<MyDeposit[]>([]);
   const [scanning, setScanning]       = useState(false);
+  const [plans, setPlans]             = useState<SavingsPlan[]>([]);
+  /** 'all' | planId | 'unassigned'. Which plan's deposits are visible. */
+  const [planFilter, setPlanFilter]   = useState<string>(initialPlanFilter);
 
   const [recipient, setRecipient]     = useState('');
-  const [partialAmounts, setPartialAmounts] = useState<Record<number, string>>({});
+  /** Partial-withdraw amount keyed by deposit commitment (stable across filters). */
+  const [partialAmounts, setPartialAmounts] = useState<Record<string, string>>({});
 
   const [busy, setBusy]               = useState(false);
-  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [selectedCommitment, setSelectedCommitment] = useState<string | null>(null);
   const [provingStep, setProvingStep] = useState('');
   const [txHash, setTxHash]           = useState<string | null>(null);
   const [error, setError]             = useState<string | null>(null);
@@ -123,6 +133,7 @@ export default function WithdrawPage() {
           amount: note.amount,
           week: note.week,
           memo: note.memo,
+          planId: note.planId ?? null,
           commitment,
           nullifier,
           event: ev,
@@ -153,6 +164,7 @@ export default function WithdrawPage() {
               nonce: changeNonce,
               amount,
               week: CHANGE_WEEK,
+              planId: o.planId,
               commitment: derived,
               nullifier,
             });
@@ -174,6 +186,7 @@ export default function WithdrawPage() {
           nonce: data.nonce,
           amount,
           week: CHANGE_WEEK,
+          planId: null,
           commitment,
           nullifier,
         });
@@ -204,10 +217,24 @@ export default function WithdrawPage() {
 
   useEffect(() => { if (address && !recipient) setRecipient(address); }, [address, recipient]);
   useEffect(() => { void scanMyDeposits(); }, [scanMyDeposits]);
+  useEffect(() => {
+    if (!address) return;
+    void api.listPlans(address, false).then(({ plans: list }) => setPlans(list)).catch(() => {});
+  }, [address]);
+
+  const planLabelById = useMemo(
+    () => new Map(plans.map((p) => [p.id, p.label ?? 'Untitled'])),
+    [plans],
+  );
+  const visibleDeposits = useMemo(() => {
+    if (planFilter === 'all') return myDeposits;
+    if (planFilter === 'unassigned') return myDeposits.filter((d) => !d.planId);
+    return myDeposits.filter((d) => d.planId === planFilter);
+  }, [myDeposits, planFilter]);
 
   if (!address || !secret) return null;
 
-  const totalMineXlm = myDeposits.reduce((s, d) => s + d.amount, 0) / 10_000_000;
+  const totalMineXlm = visibleDeposits.reduce((s, d) => s + d.amount, 0) / 10_000_000;
   const xlmLocked = Number(vaultLocked) / 10_000_000;
 
   async function computeRecipientHash(): Promise<string> {
@@ -246,13 +273,12 @@ export default function WithdrawPage() {
     });
   }
 
-  async function doWithdrawFull(idx: number) {
+  async function doWithdrawFull(d: MyDeposit) {
     if (!address || !secret) return;
-    const d = myDeposits[idx];
     if (!recipient || recipient.length !== 56) {
       setError('Enter a valid recipient Stellar address.'); return;
     }
-    setBusy(true); setError(null); setTxHash(null); setSelectedIdx(idx);
+    setBusy(true); setError(null); setTxHash(null); setSelectedCommitment(d.commitment);
     try {
       await ensureBound(d);
 
@@ -304,9 +330,8 @@ export default function WithdrawPage() {
     }
   }
 
-  async function doWithdrawPartial(idx: number, withdrawXlm: number) {
+  async function doWithdrawPartial(d: MyDeposit, withdrawXlm: number) {
     if (!address || !secret) return;
-    const d = myDeposits[idx];
     if (!recipient || recipient.length !== 56) {
       setError('Enter a valid recipient Stellar address.'); return;
     }
@@ -318,7 +343,7 @@ export default function WithdrawPage() {
     }
     const changeStroops = depositStroops - withdrawStroops;
 
-    setBusy(true); setError(null); setTxHash(null); setSelectedIdx(idx);
+    setBusy(true); setError(null); setTxHash(null); setSelectedCommitment(d.commitment);
     try {
       await ensureBound(d);
 
@@ -431,6 +456,30 @@ export default function WithdrawPage() {
         />
       </div>
 
+      {/* Plan filter — shows just this plan's deposits (falls back to "all"). */}
+      {plans.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          <FilterChip
+            active={planFilter === 'all'}
+            onClick={() => setPlanFilter('all')}
+            label="All plans"
+          />
+          {plans.map((p) => (
+            <FilterChip
+              key={p.id}
+              active={planFilter === p.id}
+              onClick={() => setPlanFilter(p.id)}
+              label={p.label ?? 'Untitled'}
+            />
+          ))}
+          <FilterChip
+            active={planFilter === 'unassigned'}
+            onClick={() => setPlanFilter('unassigned')}
+            label="Unassigned"
+          />
+        </div>
+      )}
+
       {/* Recipient */}
       <Card>
         <CardHeader>
@@ -490,13 +539,16 @@ export default function WithdrawPage() {
         <CardContent className="p-0">
           {scanning ? (
             <p className="px-6 py-10 text-center text-sm text-muted">Scanning vault events…</p>
-          ) : myDeposits.length === 0 ? (
+          ) : visibleDeposits.length === 0 ? (
             <div className="px-6 py-10 space-y-3 text-sm">
-              <p className="font-medium">No deposits yet.</p>
+              <p className="font-medium">
+                {planFilter === 'all'
+                  ? 'No deposits yet.'
+                  : 'No deposits in this plan yet.'}
+              </p>
               <p className="text-muted">
-                Go to <a className="underline" href="/dashboard/deposit">Deposit</a>,
-                generate a payment link, and have a client pay you. Your deposit will appear
-                here within ~15 seconds.
+                Go to <a className="underline" href="/dashboard/deposit">Deposit</a> to
+                add funds{planFilter !== 'all' ? ' to this plan' : ''}.
               </p>
               <p className="text-xs text-muted">
                 Vault: <span className="font-mono">{CONTRACT_IDS.vault.slice(0, 10)}…{CONTRACT_IDS.vault.slice(-6)}</span>
@@ -504,21 +556,27 @@ export default function WithdrawPage() {
             </div>
           ) : (
             <div className="divide-y divide-border">
-              {myDeposits.map((d, i) => {
+              {visibleDeposits.map((d) => {
                 const xlm = d.amount / 10_000_000;
-                const isActive = selectedIdx === i && busy;
-                const partialStr = partialAmounts[i] ?? '';
+                const isActive = selectedCommitment === d.commitment && busy;
+                const partialStr = partialAmounts[d.commitment] ?? '';
                 const partialNum = Number(partialStr);
                 const partialValid = partialStr !== '' && Number.isFinite(partialNum) && partialNum > 0 && partialNum <= xlm;
                 const subLabel = d.kind === 'change'
                   ? 'Change from a previous partial withdrawal'
                   : `Week #${d.week}${d.leafIndex != null ? ` · Leaf #${d.leafIndex}` : ''}`;
+                const planLabel = d.planId ? planLabelById.get(d.planId) : null;
                 return (
                   <div key={d.commitment} className="px-6 py-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <span className="text-base font-semibold">{xlm.toFixed(4)} {d.asset}</span>
                         {d.kind === 'change' && <Badge>Change</Badge>}
+                        {planLabel ? (
+                          <Badge tone="neutral">Plan: {planLabel}</Badge>
+                        ) : (
+                          <Badge tone="neutral">Unassigned</Badge>
+                        )}
                         <span className="text-xs text-muted">{subLabel}</span>
                       </div>
                       {isActive && <span className="text-xs text-muted">{provingStep}</span>}
@@ -539,12 +597,12 @@ export default function WithdrawPage() {
                     <div className="flex flex-wrap items-end gap-2">
                       <div className="flex-1 min-w-[180px]">
                         <Input
-                          label="Amount to withdraw (XLM)"
+                          label={`Amount to withdraw (${d.asset})`}
                           type="number"
                           min={0.0000001}
                           step={0.0000001}
                           value={partialStr}
-                          onChange={(e) => setPartialAmounts({ ...partialAmounts, [i]: e.target.value })}
+                          onChange={(e) => setPartialAmounts({ ...partialAmounts, [d.commitment]: e.target.value })}
                           placeholder={`Leave empty for full ${xlm.toFixed(4)}`}
                           disabled={busy}
                         />
@@ -552,23 +610,23 @@ export default function WithdrawPage() {
                       <Button
                         size="sm"
                         variant="secondary"
-                        onClick={() => doWithdrawFull(i)}
+                        onClick={() => doWithdrawFull(d)}
                         disabled={busy}
                       >
                         Withdraw all
                       </Button>
                       <Button
                         size="sm"
-                        onClick={() => doWithdrawPartial(i, partialNum)}
+                        onClick={() => doWithdrawPartial(d, partialNum)}
                         disabled={busy || !partialValid}
                       >
-                        Withdraw {partialValid ? partialNum.toFixed(4) : ''} XLM
+                        Withdraw {partialValid ? partialNum.toFixed(4) : ''} {d.asset}
                       </Button>
                     </div>
 
                     {partialValid && partialNum < xlm && (
                       <p className="text-xs text-muted">
-                        {(xlm - partialNum).toFixed(4)} XLM stays shielded in the vault as a new commitment.
+                        {(xlm - partialNum).toFixed(4)} {d.asset} stays shielded in the vault as a new commitment.
                       </p>
                     )}
                   </div>
@@ -579,5 +637,26 @@ export default function WithdrawPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function FilterChip({
+  active,
+  onClick,
+  label,
+}: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'rounded-full border px-3 py-1 text-xs font-medium transition-colors ' +
+        (active
+          ? 'border-foreground bg-foreground text-background'
+          : 'border-border bg-surface text-muted hover:bg-subtle')
+      }
+    >
+      {label}
+    </button>
   );
 }

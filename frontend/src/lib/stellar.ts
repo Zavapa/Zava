@@ -687,6 +687,8 @@ export interface VaultDepositEvent {
   encryptedNote: string;
   txHash: string;
   ledger: number;
+  /** Unix seconds — only populated when served via the indexer. */
+  timestampSec?: number;
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api';
@@ -713,10 +715,19 @@ async function fetchVaultEvents(asset: Asset): Promise<VaultDepositEvent[]> {
           encryptedNote: string;
           txHash: string;
           ledger: number;
+          timestamp?: number;
         }>;
       };
       if (data.events && data.events.length > 0) {
-        return data.events.map((e) => ({ ...e, asset }));
+        return data.events.map((e) => ({
+          asset,
+          leafIndex: e.leafIndex,
+          commitment: e.commitment,
+          encryptedNote: e.encryptedNote,
+          txHash: e.txHash,
+          ledger: e.ledger,
+          timestampSec: typeof e.timestamp === 'number' ? e.timestamp : undefined,
+        }));
       }
     }
   } catch (err) {

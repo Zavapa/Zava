@@ -26,12 +26,15 @@ export function useZcs() {
     setLoading(true);
     setError(null);
     try {
-      // 1. Pull plan (404 = no plan declared yet, treat as null).
+      // 1. Pull plans (many-per-wallet). ZCS is computed against the OLDEST
+      //    active plan — that's the one with the longest track record. If the
+      //    user has no plan yet we treat as null and consistency = 0.
       let p: SavingsPlan | null = null;
       try {
-        p = await api.getPlan(address);
+        const { plans } = await api.listPlans(address, false);
+        if (plans.length > 0) p = plans[0]; // API returns ascending by createdAt
       } catch (e) {
-        if (!(e instanceof ApiError && e.status === 404)) throw e;
+        if (!(e instanceof ApiError)) throw e;
       }
       setPlan(p);
 
@@ -46,7 +49,7 @@ export function useZcs() {
         const spent = await vaultIsNullifierSpent(nullifier, ev.asset);
         deposits.push({
           amountStroops: toUsdStroops(note.amount, ev.asset),
-          timestampSec: Date.now() / 1000, // TODO: surface ledgerCloseTime from indexer
+          timestampSec: ev.timestampSec ?? Math.floor(Date.now() / 1000),
           week: note.week,
           spent,
         });

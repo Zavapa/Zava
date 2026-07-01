@@ -1,7 +1,8 @@
 'use client';
 
+import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
@@ -18,6 +19,7 @@ import {
 import { deriveCommitment, deriveNullifier, randomFieldHex } from '@/lib/crypto';
 import { saveDeposit } from '@/lib/savingsStore';
 import { encryptNote } from '@/lib/noteEncryption';
+import { api, SavingsPlan } from '@/lib/api';
 
 type Mode = 'self' | 'link';
 type Currency = 'XLM' | 'USDC';
@@ -34,6 +36,8 @@ function savePaymentNonce(weekNumber: number, nonce: string) {
 
 export default function DepositPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const preselectedPlanId = searchParams.get('plan');
   const { address, secret, zavaId, scanKey, connect, connecting } = useWallet();
   const [mode, setMode] = useState<Mode>('self');
   const [currency, setCurrency] = useState<Currency>('XLM');
@@ -41,6 +45,9 @@ export default function DepositPage() {
   const [suggestedAmount, setSuggestedAmount] = useState('');
   const [weekNumber, setWeekNumber] = useState(0);
   const [memo, setMemo] = useState('');
+  const [plans, setPlans] = useState<SavingsPlan[]>([]);
+  const [planId, setPlanId] = useState<string>('');
+  const [plansLoaded, setPlansLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -54,6 +61,22 @@ export default function DepositPage() {
     if (!address) return;
     void getCommitmentCount().then(setWeekNumber).catch(() => {});
   }, [address]);
+
+  // Load the user's plans so both self-deposit and link-generation can tag
+  // deposits with a plan.
+  useEffect(() => {
+    if (!address) return;
+    void api.listPlans(address, false).then(({ plans: list }) => {
+      setPlans(list);
+      setPlansLoaded(true);
+      // Preselect: URL param wins, else first plan, else empty (=unassigned).
+      const preferred =
+        (preselectedPlanId && list.find((p) => p.id === preselectedPlanId)?.id) ||
+        list[0]?.id ||
+        '';
+      setPlanId(preferred);
+    }).catch(() => setPlansLoaded(true));
+  }, [address, preselectedPlanId]);
 
   // Reset link when currency changes
   useEffect(() => {
@@ -115,6 +138,7 @@ export default function DepositPage() {
           nonce,
           week: weekNumber,
           asset: currency,
+          planId: planId || undefined,
           memo: memo.trim() || undefined,
         },
         scanKey,
@@ -136,7 +160,8 @@ export default function DepositPage() {
         txHash: hash,
       });
       setSuccess(`Deposited into vault · leaf #${leafIndex} · tx ${hash.slice(0, 10)}…`);
-      setTimeout(() => router.push('/dashboard'), 1800);
+      const returnTo = planId ? `/dashboard/plans/${planId}` : '/dashboard';
+      setTimeout(() => router.push(returnTo), 1800);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -164,6 +189,10 @@ export default function DepositPage() {
       });
       if (suggestedAmount && Number(suggestedAmount) > 0) {
         params.set('a', suggestedAmount);
+      }
+      if (planId) {
+        // Tag incoming payments so they land in the right plan on decryption.
+        params.set('p', planId);
       }
       setPayLink(`${window.location.origin}/pay?${params.toString()}`);
     } catch (err) {
@@ -224,6 +253,42 @@ export default function DepositPage() {
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Plan picker — determines which plan this deposit counts toward. */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-medium text-muted">Plan</p>
+          <Link href="/dashboard/plans/new" className="text-xs text-muted hover:text-foreground underline">
+            + new plan
+          </Link>
+        </div>
+        {!plansLoaded ? (
+          <p className="text-xs text-muted">Loading plans…</p>
+        ) : plans.length === 0 ? (
+          <div className="rounded-md border border-border bg-subtle p-3 text-xs text-muted">
+            You have no plans yet. Deposits will be recorded but won&apos;t roll up
+            under a plan.{' '}
+            <Link href="/dashboard/plans/new" className="text-foreground underline">
+              Create a plan first
+            </Link>{' '}
+            to get streak tracking.
+          </div>
+        ) : (
+          <select
+            value={planId}
+            onChange={(e) => setPlanId(e.target.value)}
+            disabled={busy || notConnected}
+            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            {plans.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label ?? 'Untitled'} · {p.cadence} · {p.targetRange}
+              </option>
+            ))}
+            <option value="">— No plan (unassigned) —</option>
+          </select>
+        )}
       </div>
 
       {/* Mode toggle */}

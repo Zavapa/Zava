@@ -210,8 +210,8 @@ export default function OverviewPage() {
                 </CardDescription>
               </div>
               {!zcs.plan && (
-                <Link href="/dashboard/plan">
-                  <Button size="sm" variant="secondary">Set savings plan</Button>
+                <Link href="/dashboard/plans/new">
+                  <Button size="sm" variant="secondary">Create a plan</Button>
                 </Link>
               )}
             </div>
@@ -329,10 +329,10 @@ export default function OverviewPage() {
             description="Generate or refresh your ZK credit proof."
           />
           <ActionCard
-            href="/dashboard/plan"
+            href="/dashboard/plans"
             icon="◎"
-            title="Savings plan"
-            description="Set or adjust your target cadence and range."
+            title="Savings plans"
+            description="Create, follow, and track each of your named plans."
           />
         </div>
       </section>

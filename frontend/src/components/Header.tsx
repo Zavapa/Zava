@@ -9,7 +9,7 @@ import { ZavaLogo } from './ZavaLogo';
 
 const NAV = [
   { href: '/dashboard', label: 'Overview' },
-  { href: '/dashboard/plan', label: 'Plan' },
+  { href: '/dashboard/plans', label: 'Plans' },
   { href: '/dashboard/deposit', label: 'Deposit' },
   { href: '/dashboard/send', label: 'Send' },
   { href: '/dashboard/withdraw', label: 'Withdraw' },

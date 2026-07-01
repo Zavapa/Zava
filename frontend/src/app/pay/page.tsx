@@ -32,6 +32,7 @@ function PayContent() {
   const weekNumber   = parseInt(params.get('w') ?? '0', 10);
   const suggestedAmt = params.get('a') ?? '';
   const asset        = (params.get('asset') ?? 'XLM') as 'XLM' | 'USDC';
+  const planId       = params.get('p') ?? ''; // recipient's plan tag (may be empty)
 
   const [amount, setAmount]         = useState(suggestedAmt);
   const [memo, setMemo]             = useState('');
@@ -116,6 +117,7 @@ function PayContent() {
           nonce,
           week: weekNumber,
           asset,
+          planId: planId || undefined,
           memo: memo.trim() || undefined,
         },
         scanKey,
@@ -137,7 +139,7 @@ function PayContent() {
       setError((e as Error).message);
       setStep('idle');
     }
-  }, [wallet, amount, memo, nonce, weekNumber, scanKey, asset]);
+  }, [wallet, amount, memo, nonce, weekNumber, scanKey, asset, planId]);
 
   // Validate — zavaId, scanKey, and nonce must all be 64 hex chars
   const isValidLink = zavaId.length === 64 && scanKey.length === 64 && nonce.length === 64;

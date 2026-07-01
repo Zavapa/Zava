@@ -161,19 +161,36 @@ export const api = {
   simulateLoan: (wallet: string, amountXlm: number) =>
     request<LoanDecision>(`/credit/v3/${wallet}/simulate-loan?amount=${amountXlm}`),
 
-  // ── Savings Plan ────────────────────────────────────────────────────────
-  getPlan: (wallet: string) =>
-    request<SavingsPlan>(`/plan/${wallet}`),
+  // ── Savings Plans (many per wallet) ─────────────────────────────────────
+  listPlans: (wallet: string, includeArchived = false) =>
+    request<{ plans: SavingsPlan[] }>(
+      `/plan/${wallet}${includeArchived ? '?includeArchived=1' : ''}`,
+    ),
 
-  upsertPlan: (data: {
+  getPlanById: (id: string) =>
+    request<SavingsPlan>(`/plan/id/${id}`),
+
+  createPlan: (data: {
     wallet: string;
     cadence: 'weekly' | 'monthly';
     targetRange: 'R5' | 'R20' | 'R50' | 'R200' | 'R500';
-    label?: string;
+    label: string;
   }) => request<SavingsPlan>('/plan', {
-    method: 'PUT',
+    method: 'POST',
     body: JSON.stringify(data),
   }),
+
+  updatePlan: (id: string, data: {
+    cadence?: 'weekly' | 'monthly';
+    targetRange?: 'R5' | 'R20' | 'R50' | 'R200' | 'R500';
+    label?: string;
+  }) => request<SavingsPlan>(`/plan/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  }),
+
+  archivePlan: (id: string) =>
+    request<SavingsPlan>(`/plan/${id}`, { method: 'DELETE' }),
 
   // ── ZCS sharing tokens ─────────────────────────────────────────────────
   issueScore: (report: IssueScoreRequest) =>
@@ -195,7 +212,8 @@ export interface SavingsPlan {
   cadence: 'weekly' | 'monthly';
   targetRange: 'R5' | 'R20' | 'R50' | 'R200' | 'R500';
   label: string | null;
-  startedAt: string;   // unix seconds as string
+  startedAt: string;      // unix seconds as string
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

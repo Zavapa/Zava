@@ -12,6 +12,8 @@ export interface VaultNote {
   nonce: string;     // hex 64 chars — used to derive the commitment
   week: number;
   asset: string;
+  /** Optional plan this deposit belongs to. Older notes may not have this. */
+  planId?: string;
   /** Private memo from the sender — encrypted, never on-chain in plaintext. */
   memo?: string;
 }
