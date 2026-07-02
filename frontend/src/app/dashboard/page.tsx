@@ -141,17 +141,14 @@ export default function OverviewPage() {
   const tierValue = zcs.report?.tier ?? null;
 
   return (
-    <div className="space-y-12">
+    <div className="space-y-10">
 
       {/* ───── Greeting / page header ───── */}
       <section className="flex flex-wrap items-end justify-between gap-6">
-        <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted">
-            Overview
-          </p>
-          <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
+        <div className="space-y-1.5">
+          <h2 className="text-2xl font-bold tracking-tight md:text-3xl">
             Welcome back, {displayName ?? 'friend'}
-          </h1>
+          </h2>
           <p className="font-mono text-xs text-muted">
             {address.slice(0, 10)}…{address.slice(-10)} · Stellar {network ?? 'testnet'}
           </p>
