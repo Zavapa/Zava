@@ -1,13 +1,19 @@
-'use client';
+"use client";
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
-import { Input } from '@/components/ui/Input';
-import { Stat } from '@/components/ui/Stat';
-import { useWallet } from '@/components/WalletProvider';
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
+import { Stat } from "@/components/ui/Stat";
+import { useWallet } from "@/components/WalletProvider";
 import {
   Asset,
   CONTRACT_IDS,
@@ -20,14 +26,18 @@ import {
   vaultPartialWithdraw,
   vaultWithdraw,
   VaultDepositEvent,
-} from '@/lib/stellar';
-import { decryptNote } from '@/lib/noteEncryption';
-import { deriveChangeNonce, deriveCommitment, deriveNullifier } from '@/lib/crypto';
-import { api, SavingsPlan } from '@/lib/api';
+} from "@/lib/stellar";
+import { decryptNote } from "@/lib/noteEncryption";
+import {
+  deriveChangeNonce,
+  deriveCommitment,
+  deriveNullifier,
+} from "@/lib/crypto";
+import { api, SavingsPlan } from "@/lib/api";
 
 interface MyDeposit {
   /** "original" = paid in via the link; "change" = leftover from a partial withdrawal. */
-  kind: 'original' | 'change';
+  kind: "original" | "change";
   /** Which vault holds this deposit. */
   asset: Asset;
   /** Vault leaf index if known (originals always have it; change UTXOs may not until we index events). */
@@ -54,13 +64,13 @@ interface SavedChange {
   asset?: Asset;
 }
 
-const CHANGE_PREFIX = 'zava.change.v1.';
+const CHANGE_PREFIX = "zava.change.v1.";
 /** Week used for change UTXOs — they have no real week. */
 const CHANGE_WEEK = 0;
 
 /** Read all `zava.change.v1.<commitment>` entries from localStorage. */
 function readSavedChanges(): Array<{ commitment: string; data: SavedChange }> {
-  if (typeof window === 'undefined') return [];
+  if (typeof window === "undefined") return [];
   const out: Array<{ commitment: string; data: SavedChange }> = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
@@ -81,26 +91,30 @@ function readSavedChanges(): Array<{ commitment: string; data: SavedChange }> {
 export default function WithdrawPage() {
   const { address, secret, scanKey } = useWallet();
   const searchParams = useSearchParams();
-  const initialPlanFilter = searchParams.get('plan') ?? 'all';
+  const initialPlanFilter = searchParams.get("plan") ?? "all";
 
   const [vaultLocked, setVaultLocked] = useState<bigint>(0n);
-  const [leafCount, setLeafCount]     = useState(0);
-  const [eventCount, setEventCount]   = useState(0);
-  const [myDeposits, setMyDeposits]   = useState<MyDeposit[]>([]);
-  const [scanning, setScanning]       = useState(false);
-  const [plans, setPlans]             = useState<SavingsPlan[]>([]);
+  const [leafCount, setLeafCount] = useState(0);
+  const [eventCount, setEventCount] = useState(0);
+  const [myDeposits, setMyDeposits] = useState<MyDeposit[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [plans, setPlans] = useState<SavingsPlan[]>([]);
   /** 'all' | planId | 'unassigned'. Which plan's deposits are visible. */
-  const [planFilter, setPlanFilter]   = useState<string>(initialPlanFilter);
+  const [planFilter, setPlanFilter] = useState<string>(initialPlanFilter);
 
-  const [recipient, setRecipient]     = useState('');
+  const [recipient, setRecipient] = useState("");
   /** Partial-withdraw amount keyed by deposit commitment (stable across filters). */
-  const [partialAmounts, setPartialAmounts] = useState<Record<string, string>>({});
+  const [partialAmounts, setPartialAmounts] = useState<Record<string, string>>(
+    {},
+  );
 
-  const [busy, setBusy]               = useState(false);
-  const [selectedCommitment, setSelectedCommitment] = useState<string | null>(null);
-  const [provingStep, setProvingStep] = useState('');
-  const [txHash, setTxHash]           = useState<string | null>(null);
-  const [error, setError]             = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [selectedCommitment, setSelectedCommitment] = useState<string | null>(
+    null,
+  );
+  const [provingStep, setProvingStep] = useState("");
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const scanMyDeposits = useCallback(async () => {
     if (!secret || !scanKey) return;
@@ -124,9 +138,9 @@ export default function WithdrawPage() {
         const note = await decryptNote(ev.encryptedNote, scanKey);
         if (!note) continue;
         const commitment = await deriveCommitment(note.nonce, note.amount);
-        const nullifier  = await deriveNullifier(note.nonce, note.week);
+        const nullifier = await deriveNullifier(note.nonce, note.week);
         originals.push({
-          kind: 'original',
+          kind: "original",
           asset: ev.asset,
           leafIndex: ev.leafIndex,
           nonce: note.nonce,
@@ -151,14 +165,18 @@ export default function WithdrawPage() {
       for (const o of originals) {
         const isSpent = await vaultIsNullifierSpent(o.nullifier, o.asset);
         if (!isSpent) continue;
-        const changeNonce = await deriveChangeNonce(secret, o.commitment, o.nullifier);
+        const changeNonce = await deriveChangeNonce(
+          secret,
+          o.commitment,
+          o.nullifier,
+        );
         for (const [savedCommitment, data] of savedByCommitment.entries()) {
           const amount = Number(BigInt(data.amountStroops));
           const derived = await deriveCommitment(changeNonce, amount);
           if (derived === savedCommitment) {
             const nullifier = await deriveNullifier(changeNonce, CHANGE_WEEK);
             candidates.push({
-              kind: 'change',
+              kind: "change",
               asset: o.asset,
               leafIndex: null,
               nonce: changeNonce,
@@ -180,8 +198,8 @@ export default function WithdrawPage() {
         const amount = Number(BigInt(data.amountStroops));
         const nullifier = await deriveNullifier(data.nonce, CHANGE_WEEK);
         candidates.push({
-          kind: 'change',
-          asset: data.asset ?? 'XLM',
+          kind: "change",
+          asset: data.asset ?? "XLM",
           leafIndex: null,
           nonce: data.nonce,
           amount,
@@ -195,7 +213,7 @@ export default function WithdrawPage() {
       // 3) Filter — query the correct per-asset vault for each candidate.
       const active: MyDeposit[] = [];
       for (const c of candidates) {
-        if (c.kind === 'change') {
+        if (c.kind === "change") {
           const spent = await vaultIsNullifierSpent(c.nullifier, c.asset);
           if (!spent) active.push(c);
         } else {
@@ -215,116 +233,126 @@ export default function WithdrawPage() {
     }
   }, [secret, scanKey]);
 
-  useEffect(() => { if (address && !recipient) setRecipient(address); }, [address, recipient]);
-  useEffect(() => { void scanMyDeposits(); }, [scanMyDeposits]);
+  useEffect(() => {
+    if (address && !recipient) setRecipient(address);
+  }, [address, recipient]);
+  useEffect(() => {
+    void scanMyDeposits();
+  }, [scanMyDeposits]);
   useEffect(() => {
     if (!address) return;
-    void api.listPlans(address, false).then(({ plans: list }) => setPlans(list)).catch(() => {});
+    void api
+      .listPlans(address, false)
+      .then(({ plans: list }) => setPlans(list))
+      .catch(() => {});
   }, [address]);
 
-  const planLabelById = useMemo(
-    () => new Map(plans.map((p) => [p.id, p.label ?? 'Untitled'])),
-    [plans],
-  );
+  const planById = useMemo(() => new Map(plans.map((p) => [p.id, p])), [plans]);
   const visibleDeposits = useMemo(() => {
-    if (planFilter === 'all') return myDeposits;
-    if (planFilter === 'unassigned') return myDeposits.filter((d) => !d.planId);
+    if (planFilter === "all") return myDeposits;
+    if (planFilter === "unassigned") return myDeposits.filter((d) => !d.planId);
     return myDeposits.filter((d) => d.planId === planFilter);
   }, [myDeposits, planFilter]);
 
   if (!address || !secret) return null;
 
-  const totalMineXlm = visibleDeposits.reduce((s, d) => s + d.amount, 0) / 10_000_000;
+  const totalMineXlm =
+    visibleDeposits.reduce((s, d) => s + d.amount, 0) / 10_000_000;
   const xlmLocked = Number(vaultLocked) / 10_000_000;
 
   async function computeRecipientHash(): Promise<string> {
-    const { Address } = await import('@stellar/stellar-sdk');
+    const { Address } = await import("@stellar/stellar-sdk");
     const xdr = new Address(recipient).toScVal().toXDR();
-    const hashBuf = await crypto.subtle.digest('SHA-256', new Uint8Array(xdr));
+    const hashBuf = await crypto.subtle.digest("SHA-256", new Uint8Array(xdr));
     return Array.from(new Uint8Array(hashBuf))
-      .map((b) => b.toString(16).padStart(2, '0')).join('');
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
   }
 
   /** Change UTXOs need their nullifier bound to the commitment in the vault
    *  before they can be spent. Originals already have this binding from deposit. */
   async function ensureBound(d: MyDeposit): Promise<void> {
-    if (d.kind !== 'change') return;
+    if (d.kind !== "change") return;
     if (!address) return;
-    setProvingStep('Binding change nullifier (one-time setup)…');
-    const { generateShieldedProof } = await import('@/lib/prover');
+    setProvingStep("Binding change nullifier (one-time setup)…");
+    const { generateShieldedProof } = await import("@/lib/prover");
     // The bind_change_nullifier contract method takes (proof, commitment,
     // nullifier) — current stub verifier accepts any proof.
     const { proofHex } = await generateShieldedProof({
-      secret:            d.nonce,
-      amount:            BigInt(d.amount),
-      merkleRoot:        '0'.repeat(64),
-      merklePathHex:     Array(20).fill('0'.repeat(64)),
+      secret: d.nonce,
+      amount: BigInt(d.amount),
+      merkleRoot: "0".repeat(64),
+      merklePathHex: Array(20).fill("0".repeat(64)),
       merklePathIndices: Array(20).fill(false),
-      nullifier:         d.nullifier,
-      recipientHash:     '0'.repeat(64),
-      amountOut:         0n,
+      nullifier: d.nullifier,
+      recipientHash: "0".repeat(64),
+      amountOut: 0n,
     });
     await vaultBindChangeNullifier({
-      caller:           address,
-      asset:            d.asset,
+      caller: address,
+      asset: d.asset,
       proofHex,
       changeCommitment: d.commitment,
-      changeNullifier:  d.nullifier,
+      changeNullifier: d.nullifier,
     });
   }
 
   async function doWithdrawFull(d: MyDeposit) {
     if (!address || !secret) return;
     if (!recipient || recipient.length !== 56) {
-      setError('Enter a valid recipient Stellar address.'); return;
+      setError("Enter a valid recipient Stellar address.");
+      return;
     }
-    setBusy(true); setError(null); setTxHash(null); setSelectedCommitment(d.commitment);
+    setBusy(true);
+    setError(null);
+    setTxHash(null);
+    setSelectedCommitment(d.commitment);
     try {
       await ensureBound(d);
 
       const recipientHash = await computeRecipientHash();
 
-      setProvingStep('Fetching vault Merkle root…');
+      setProvingStep("Fetching vault Merkle root…");
       const { root } = await getVaultStats(d.asset);
 
-      setProvingStep('Generating ZK proof (stub)…');
-      const { generateShieldedProof } = await import('@/lib/prover');
-      const zeroPath = Array(20).fill('0'.repeat(64));
+      setProvingStep("Generating ZK proof (stub)…");
+      const { generateShieldedProof } = await import("@/lib/prover");
+      const zeroPath = Array(20).fill("0".repeat(64));
       const zeroIndices = Array(20).fill(false);
       const { proofHex } = await generateShieldedProof({
-        secret:            d.nonce,
-        amount:            BigInt(d.amount),
-        merkleRoot:        root || '0'.repeat(64),
-        merklePathHex:     zeroPath,
+        secret: d.nonce,
+        amount: BigInt(d.amount),
+        merkleRoot: root || "0".repeat(64),
+        merklePathHex: zeroPath,
         merklePathIndices: zeroIndices,
-        nullifier:         d.nullifier,
+        nullifier: d.nullifier,
         recipientHash,
-        amountOut:         BigInt(d.amount),
+        amountOut: BigInt(d.amount),
       });
 
-      setProvingStep('Signing withdrawal in Freighter…');
+      setProvingStep("Signing withdrawal in Freighter…");
       const { hash } = await vaultWithdraw({
-        caller:        address,
-        asset:         d.asset,
+        caller: address,
+        asset: d.asset,
         proofHex,
-        commitment:    d.commitment,
-        root:          root || '0'.repeat(64),
-        nullifier:     d.nullifier,
+        commitment: d.commitment,
+        root: root || "0".repeat(64),
+        nullifier: d.nullifier,
         recipientHash,
         amountStroops: BigInt(d.amount),
         recipient,
       });
 
       setTxHash(hash);
-      setProvingStep('');
+      setProvingStep("");
       // Withdrawing a change UTXO clears its localStorage entry.
-      if (d.kind === 'change') {
+      if (d.kind === "change") {
         localStorage.removeItem(`zava.change.v1.${d.commitment}`);
       }
       void scanMyDeposits();
     } catch (e) {
       setError((e as Error).message);
-      setProvingStep('');
+      setProvingStep("");
     } finally {
       setBusy(false);
     }
@@ -333,17 +361,23 @@ export default function WithdrawPage() {
   async function doWithdrawPartial(d: MyDeposit, withdrawXlm: number) {
     if (!address || !secret) return;
     if (!recipient || recipient.length !== 56) {
-      setError('Enter a valid recipient Stellar address.'); return;
+      setError("Enter a valid recipient Stellar address.");
+      return;
     }
     const withdrawStroops = BigInt(Math.floor(withdrawXlm * 10_000_000));
-    const depositStroops  = BigInt(d.amount);
+    const depositStroops = BigInt(d.amount);
     if (withdrawStroops <= 0n || withdrawStroops > depositStroops) {
-      setError(`Withdraw amount must be between 0 and ${d.amount / 10_000_000} XLM.`);
+      setError(
+        `Withdraw amount must be between 0 and ${d.amount / 10_000_000} XLM.`,
+      );
       return;
     }
     const changeStroops = depositStroops - withdrawStroops;
 
-    setBusy(true); setError(null); setTxHash(null); setSelectedCommitment(d.commitment);
+    setBusy(true);
+    setError(null);
+    setTxHash(null);
+    setSelectedCommitment(d.commitment);
     try {
       await ensureBound(d);
 
@@ -351,41 +385,48 @@ export default function WithdrawPage() {
       // in_nullifier). The same user spending the same input always produces
       // the same change nonce — so the change UTXO is recoverable from just
       // the Freighter-derived secret on any device, no localStorage needed.
-      const changeNonce = await deriveChangeNonce(secret, d.commitment, d.nullifier);
-      const changeCommitment = await deriveCommitment(changeNonce, Number(changeStroops));
+      const changeNonce = await deriveChangeNonce(
+        secret,
+        d.commitment,
+        d.nullifier,
+      );
+      const changeCommitment = await deriveCommitment(
+        changeNonce,
+        Number(changeStroops),
+      );
 
       const recipientHash = await computeRecipientHash();
 
-      setProvingStep('Fetching vault Merkle root…');
+      setProvingStep("Fetching vault Merkle root…");
       const { root } = await getVaultStats(d.asset);
 
-      setProvingStep('Generating ZK proof (stub)…');
-      const { generatePartialWithdrawProof } = await import('@/lib/prover');
-      const zeroPath = Array(20).fill('0'.repeat(64));
+      setProvingStep("Generating ZK proof (stub)…");
+      const { generatePartialWithdrawProof } = await import("@/lib/prover");
+      const zeroPath = Array(20).fill("0".repeat(64));
       const zeroIndices = Array(20).fill(false);
       const { proofHex } = await generatePartialWithdrawProof({
-        secret:           d.nonce,
-        inputAmount:      depositStroops,
-        week:             BigInt(d.week),
-        merklePathHex:    zeroPath,
+        secret: d.nonce,
+        inputAmount: depositStroops,
+        week: BigInt(d.week),
+        merklePathHex: zeroPath,
         merklePathIndices: zeroIndices,
-        changeSecret:     changeNonce,
-        inCommitment:     d.commitment,
-        inRoot:           root || '0'.repeat(64),
-        inNullifier:      d.nullifier,
+        changeSecret: changeNonce,
+        inCommitment: d.commitment,
+        inRoot: root || "0".repeat(64),
+        inNullifier: d.nullifier,
         recipientHash,
-        withdrawAmount:   withdrawStroops,
+        withdrawAmount: withdrawStroops,
         changeCommitment,
       });
 
-      setProvingStep('Signing partial withdrawal in Freighter…');
+      setProvingStep("Signing partial withdrawal in Freighter…");
       const { hash } = await vaultPartialWithdraw({
-        caller:          address,
-        asset:           d.asset,
+        caller: address,
+        asset: d.asset,
         proofHex,
-        inCommitment:    d.commitment,
-        inNullifier:     d.nullifier,
-        inRoot:          root || '0'.repeat(64),
+        inCommitment: d.commitment,
+        inNullifier: d.nullifier,
+        inRoot: root || "0".repeat(64),
         recipient,
         recipientHash,
         withdrawStroops,
@@ -393,7 +434,7 @@ export default function WithdrawPage() {
       });
 
       setTxHash(hash);
-      setProvingStep('');
+      setProvingStep("");
 
       // Tx confirmed: persist the new change UTXO so the user can find it on
       // future visits. Done AFTER success so failed/reverted txs don't leave
@@ -410,13 +451,13 @@ export default function WithdrawPage() {
 
       // If the input we just spent WAS itself a change UTXO, its old
       // localStorage entry is now dead (nullifier spent). Remove it.
-      if (d.kind === 'change') {
+      if (d.kind === "change") {
         localStorage.removeItem(`${CHANGE_PREFIX}${d.commitment}`);
       }
       void scanMyDeposits();
     } catch (e) {
       setError((e as Error).message);
-      setProvingStep('');
+      setProvingStep("");
     } finally {
       setBusy(false);
     }
@@ -427,13 +468,21 @@ export default function WithdrawPage() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Vault · your private funds</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Vault · your private funds
+          </h1>
           <p className="mt-1 text-sm text-muted">
-            Funds clients paid you privately. Only you can see and withdraw them.
+            Funds clients paid you privately. Only you can see and withdraw
+            them.
           </p>
         </div>
-        <Button variant="secondary" size="sm" onClick={scanMyDeposits} disabled={scanning || busy}>
-          {scanning ? 'Scanning…' : 'Refresh'}
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={scanMyDeposits}
+          disabled={scanning || busy}
+        >
+          {scanning ? "Scanning…" : "Refresh"}
         </Button>
       </div>
 
@@ -442,7 +491,7 @@ export default function WithdrawPage() {
         <Stat
           label="Your shielded balance"
           value={`${totalMineXlm.toLocaleString(undefined, { maximumFractionDigits: 4 })} XLM`}
-          hint={`${myDeposits.length} deposit${myDeposits.length === 1 ? '' : 's'}`}
+          hint={`${myDeposits.length} deposit${myDeposits.length === 1 ? "" : "s"}`}
         />
         <Stat
           label="Total vault pool"
@@ -451,7 +500,7 @@ export default function WithdrawPage() {
         />
         <Stat
           label="Events indexed"
-          value={scanning ? '…' : eventCount}
+          value={scanning ? "…" : eventCount}
           hint="Backend keeps these forever"
         />
       </div>
@@ -460,8 +509,8 @@ export default function WithdrawPage() {
       {plans.length > 0 && (
         <div className="flex flex-wrap gap-2">
           <FilterChip
-            active={planFilter === 'all'}
-            onClick={() => setPlanFilter('all')}
+            active={planFilter === "all"}
+            onClick={() => setPlanFilter("all")}
             label="All plans"
           />
           {plans.map((p) => (
@@ -469,12 +518,12 @@ export default function WithdrawPage() {
               key={p.id}
               active={planFilter === p.id}
               onClick={() => setPlanFilter(p.id)}
-              label={p.label ?? 'Untitled'}
+              label={p.label ?? "Untitled"}
             />
           ))}
           <FilterChip
-            active={planFilter === 'unassigned'}
-            onClick={() => setPlanFilter('unassigned')}
+            active={planFilter === "unassigned"}
+            onClick={() => setPlanFilter("unassigned")}
             label="Unassigned"
           />
         </div>
@@ -485,7 +534,8 @@ export default function WithdrawPage() {
         <CardHeader>
           <CardTitle className="text-base">Send withdrawn funds to</CardTitle>
           <CardDescription>
-            Any Stellar address. Pre-filled with your wallet — change for maximum privacy.
+            Any Stellar address. Pre-filled with your wallet — change for
+            maximum privacy.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -511,17 +561,19 @@ export default function WithdrawPage() {
           <CardContent className="pt-5 space-y-2">
             <Badge tone="success">Withdrawal complete</Badge>
             <p className="text-sm text-muted">
-              Transaction:{' '}
+              Transaction:{" "}
               <a
                 href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
-                target="_blank" rel="noopener noreferrer" className="underline"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline"
               >
                 {txHash.slice(0, 16)}…
               </a>
             </p>
             <p className="text-sm text-muted">
-              XLM released from vault to {recipient.slice(0, 8)}…{recipient.slice(-8)}.
-              No on-chain link to the original payer.
+              XLM released from vault to {recipient.slice(0, 8)}…
+              {recipient.slice(-8)}. No on-chain link to the original payer.
             </p>
           </CardContent>
         </Card>
@@ -532,26 +584,36 @@ export default function WithdrawPage() {
         <CardHeader>
           <CardTitle>Your deposits</CardTitle>
           <CardDescription>
-            Each deposit can be withdrawn fully or partially. Leave the partial amount
-            empty to withdraw everything; the rest stays shielded as a new commitment.
+            Each deposit can be withdrawn fully or partially. Leave the partial
+            amount empty to withdraw everything; the rest stays shielded as a
+            new commitment.
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           {scanning ? (
-            <p className="px-6 py-10 text-center text-sm text-muted">Scanning vault events…</p>
+            <p className="px-6 py-10 text-center text-sm text-muted">
+              Scanning vault events…
+            </p>
           ) : visibleDeposits.length === 0 ? (
             <div className="px-6 py-10 space-y-3 text-sm">
               <p className="font-medium">
-                {planFilter === 'all'
-                  ? 'No deposits yet.'
-                  : 'No deposits in this plan yet.'}
+                {planFilter === "all"
+                  ? "No deposits yet."
+                  : "No deposits in this plan yet."}
               </p>
               <p className="text-muted">
-                Go to <a className="underline" href="/dashboard/deposit">Deposit</a> to
-                add funds{planFilter !== 'all' ? ' to this plan' : ''}.
+                Go to{" "}
+                <a className="underline" href="/dashboard/deposit">
+                  Deposit
+                </a>{" "}
+                to add funds{planFilter !== "all" ? " to this plan" : ""}.
               </p>
               <p className="text-xs text-muted">
-                Vault: <span className="font-mono">{CONTRACT_IDS.vault.slice(0, 10)}…{CONTRACT_IDS.vault.slice(-6)}</span>
+                Vault:{" "}
+                <span className="font-mono">
+                  {CONTRACT_IDS.vault.slice(0, 10)}…
+                  {CONTRACT_IDS.vault.slice(-6)}
+                </span>
               </p>
             </div>
           ) : (
@@ -559,27 +621,41 @@ export default function WithdrawPage() {
               {visibleDeposits.map((d) => {
                 const xlm = d.amount / 10_000_000;
                 const isActive = selectedCommitment === d.commitment && busy;
-                const partialStr = partialAmounts[d.commitment] ?? '';
+                const partialStr = partialAmounts[d.commitment] ?? "";
                 const partialNum = Number(partialStr);
-                const partialValid = partialStr !== '' && Number.isFinite(partialNum) && partialNum > 0 && partialNum <= xlm;
-                const subLabel = d.kind === 'change'
-                  ? 'Change from a previous partial withdrawal'
-                  : `Week #${d.week}${d.leafIndex != null ? ` · Leaf #${d.leafIndex}` : ''}`;
-                const planLabel = d.planId ? planLabelById.get(d.planId) : null;
+                const partialValid =
+                  partialStr !== "" &&
+                  Number.isFinite(partialNum) &&
+                  partialNum > 0 &&
+                  partialNum <= xlm;
+                const subLabel =
+                  d.kind === "change"
+                    ? "Change from a previous partial withdrawal"
+                    : `Week #${d.week}${d.leafIndex != null ? ` · Leaf #${d.leafIndex}` : ""}`;
+                const plan = d.planId ? planById.get(d.planId) : null;
+                const planDisplayName = plan
+                  ? `${plan.label || "Untitled"} · ${plan.cadence} · ${plan.targetRange}`
+                  : null;
                 return (
                   <div key={d.commitment} className="px-6 py-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <span className="text-base font-semibold">{xlm.toFixed(4)} {d.asset}</span>
-                        {d.kind === 'change' && <Badge>Change</Badge>}
-                        {planLabel ? (
-                          <Badge tone="neutral">Plan: {planLabel}</Badge>
+                        <span className="text-base font-semibold">
+                          {xlm.toFixed(4)} {d.asset}
+                        </span>
+                        {d.kind === "change" && <Badge>Change</Badge>}
+                        {planDisplayName ? (
+                          <Badge tone="neutral">{planDisplayName}</Badge>
                         ) : (
                           <Badge tone="neutral">Unassigned</Badge>
                         )}
                         <span className="text-xs text-muted">{subLabel}</span>
                       </div>
-                      {isActive && <span className="text-xs text-muted">{provingStep}</span>}
+                      {isActive && (
+                        <span className="text-xs text-muted">
+                          {provingStep}
+                        </span>
+                      )}
                     </div>
 
                     {/* Private memo — decrypted client-side, visible only to you */}
@@ -602,7 +678,12 @@ export default function WithdrawPage() {
                           min={0.0000001}
                           step={0.0000001}
                           value={partialStr}
-                          onChange={(e) => setPartialAmounts({ ...partialAmounts, [d.commitment]: e.target.value })}
+                          onChange={(e) =>
+                            setPartialAmounts({
+                              ...partialAmounts,
+                              [d.commitment]: e.target.value,
+                            })
+                          }
                           placeholder={`Leave empty for full ${xlm.toFixed(4)}`}
                           disabled={busy}
                         />
@@ -620,13 +701,15 @@ export default function WithdrawPage() {
                         onClick={() => doWithdrawPartial(d, partialNum)}
                         disabled={busy || !partialValid}
                       >
-                        Withdraw {partialValid ? partialNum.toFixed(4) : ''} {d.asset}
+                        Withdraw {partialValid ? partialNum.toFixed(4) : ""}{" "}
+                        {d.asset}
                       </Button>
                     </div>
 
                     {partialValid && partialNum < xlm && (
                       <p className="text-xs text-muted">
-                        {(xlm - partialNum).toFixed(4)} {d.asset} stays shielded in the vault as a new commitment.
+                        {(xlm - partialNum).toFixed(4)} {d.asset} stays shielded
+                        in the vault as a new commitment.
                       </p>
                     )}
                   </div>
@@ -644,16 +727,20 @@ function FilterChip({
   active,
   onClick,
   label,
-}: { active: boolean; onClick: () => void; label: string }) {
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={
-        'rounded-full border px-3 py-1 text-xs font-medium transition-colors ' +
+        "rounded-full border px-3 py-1 text-xs font-medium transition-colors " +
         (active
-          ? 'border-foreground bg-foreground text-background'
-          : 'border-border bg-surface text-muted hover:bg-subtle')
+          ? "border-foreground bg-foreground text-background"
+          : "border-border bg-surface text-muted hover:bg-subtle")
       }
     >
       {label}
