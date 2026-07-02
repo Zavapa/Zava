@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -89,6 +89,14 @@ function readSavedChanges(): Array<{ commitment: string; data: SavedChange }> {
 }
 
 export default function WithdrawPage() {
+  return (
+    <Suspense fallback={<div className="text-sm text-muted">Loading…</div>}>
+      <WithdrawPageInner />
+    </Suspense>
+  );
+}
+
+function WithdrawPageInner() {
   const { address, secret, scanKey } = useWallet();
   const searchParams = useSearchParams();
   const initialPlanFilter = searchParams.get("plan") ?? "all";

@@ -1,9 +1,7 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import {
@@ -38,6 +36,14 @@ type Currency = "XLM" | "USDC";
 const CURRENCIES: Currency[] = ["XLM", "USDC"];
 
 export default function DepositPage() {
+  return (
+    <Suspense fallback={<div className="text-sm text-muted">Loading…</div>}>
+      <DepositPageInner />
+    </Suspense>
+  );
+}
+
+function DepositPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const preselectedPlanId = searchParams.get("plan");
